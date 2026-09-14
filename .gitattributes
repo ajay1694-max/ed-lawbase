@@ -1,0 +1,3 @@
+# Deploy scripts send payloads to Linux: keep LF regardless of core.autocrlf
+*.ps1 text eol=lf
+*.sh  text eol=lf
