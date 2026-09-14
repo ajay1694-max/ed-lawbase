@@ -48,6 +48,40 @@ def fts_query(q):
     return " ".join('"' + t + '"' for t in re.findall(r"[^\s\"]+", q))
 
 
+def _search_normalize(value):
+    """Comparable form for case titles, case numbers and citations."""
+    return " ".join(re.findall(r"[a-z0-9]+", (value or "").lower()))
+
+
+def _metadata_priority(row, query):
+    """Rank direct metadata matches ahead of judgments that merely cite the query.
+
+    Full-text relevance remains the stable fallback order.  A tuple is returned so
+    Python's stable sort can promote exact/prefix/phrase matches without disturbing
+    the existing FTS order among otherwise equal cases.
+    """
+    needle = _search_normalize(query)
+    words = needle.split()
+    if not words:
+        return None
+    title = _search_normalize(row["title"])
+    citation = _search_normalize(row["citation"])
+    case_number = _search_normalize(row["case_number"])
+    combined = " ".join((title, citation, case_number))
+    if not all(word in combined.split() for word in words):
+        return None
+    return (
+        int(title == needle),
+        int(title.startswith(needle)),
+        int(needle in title),
+        int(case_number == needle),
+        int(needle in case_number),
+        int(citation == needle),
+        int(needle in citation),
+        int(all(word in title.split() for word in words)),
+    )
+
+
 def attribution(c):
     r = c.execute("SELECT value FROM meta WHERE key='attribution'").fetchone()
     return r[0] if r else ""
@@ -137,6 +171,27 @@ def api_search(c, p):
             if x not in best:
                 best[x] = {"hits": 0, "snips": []}
                 order.append(x)
+
+        # A person's/case's name or a citation is often used to locate the case
+        # itself.  FTS alone can rank a later judgment quoting that case above the
+        # source judgment, so merge direct metadata matches and promote them.
+        if not raw:
+            priorities = {}
+            known = set(order)
+            meta_sql = f"""SELECT c.case_id, c.title, c.citation, c.case_number
+                           FROM cases c WHERE 1=1{extra}"""
+            for meta in c.execute(meta_sql, args):
+                priority = _metadata_priority(meta, q)
+                if priority is None:
+                    continue
+                cid = meta["case_id"]
+                priorities[cid] = priority
+                if cid not in known:
+                    best[cid] = {"hits": 0, "snips": []}
+                    order.append(cid)
+                    known.add(cid)
+            zero = (0,) * 8
+            order.sort(key=lambda cid: priorities.get(cid, zero), reverse=True)
     elif filt:
         for r in c.execute(f"SELECT c.case_id FROM cases c WHERE 1=1{extra} ORDER BY c.decision_date DESC LIMIT 2000", args):
             best[r[0]] = {"hits": 0, "snips": []}

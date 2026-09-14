@@ -23,10 +23,12 @@
   input, select { font:inherit; padding:5px 7px; border:1px solid var(--line); border-radius:4px; background:#fff; }
   input[type=search] { flex:1; min-width:200px; }
   button.go { background:var(--navy); color:#fff; border:0; padding:6px 14px; border-radius:4px; cursor:pointer; }
+  button:disabled { opacity:.55; cursor:wait; }
   button.small { font-size:12px; padding:2px 8px; border:1px solid var(--line); background:#fff; border-radius:4px; cursor:pointer; }
   .hint { color:var(--muted); font-size:12px; }
   .res { border-bottom:1px solid var(--line); padding:8px 2px; cursor:pointer; }
   .res:hover { background:#f2f6fb; }
+  .res:focus { outline:2px solid var(--navy); outline-offset:2px; background:#f2f6fb; }
   .res .t { font-weight:600; color:var(--navy); }
   .res .m { color:var(--muted); font-size:12px; }
   .snip { font-size:13px; margin:4px 0; }
@@ -110,7 +112,7 @@ function md(text){  // small markdown renderer for briefs and headnotes
 // ---------------------------------------------------------------- judgments
 function judgmentsTab(){
   $("#left").innerHTML = `
-    <div class="bar"><input type="search" id="q" placeholder='e.g. "twin conditions" or tender pardon special court'><button class="go" id="go">Search</button>
+    <div class="bar"><input type="search" id="q" placeholder='case name, citation, or words in judgment'><button class="go" id="go">Search</button><button class="small" id="resetSearch">Clear search</button>
       <label class="hint" title="Off: every word may appear anywhere in the judgment. On: all words must sit in the same passage."><input type="checkbox" id="same"> same passage only</label></div>
     <div class="bar">
       <select id="court"><option value="">All courts</option>${META.courts.map(c=>`<option value="${c.court_slug}">${esc(c.court||c.court_slug)} (${c.n})</option>`).join("")}</select>
@@ -118,15 +120,19 @@ function judgmentsTab(){
       <select id="issue"><option value="">Any issue</option>${META.issues.map(i=>`<option value="${i.issue}">${esc(i.label)} (${i.n})</option>`).join("")}</select>
       <input id="yf" type="number" placeholder="from yr" style="width:86px"><input id="yt" type="number" placeholder="to yr" style="width:86px">
     </div>
-    <div id="results" class="hint">Tip: pick an issue with no search words to list every case tagged with it.</div>`;
+    <div id="results" class="hint">Search by case name, citation, or judgment text. Direct title and citation matches appear first. You can also pick an issue with no search words.</div>`;
   const run = async () => {
+    const started = performance.now();
+    $("#go").disabled = true;
     $("#results").innerHTML = "searching…";
     const p = {q:$("#q").value, court:$("#court").value, act:$("#act").value, issue:$("#issue").value, year_from:$("#yf").value, year_to:$("#yt").value,
                within: $("#same").checked ? "chunk" : "case"};
-    const d = await api("/api/search", p);
-    if (d.error){ $("#results").textContent = d.error; return; }
-    $("#results").innerHTML = `<p class="hint">${d.total} case(s)${d.total>d.results.length?`, showing ${d.results.length}`:""}</p>` + d.results.map(r => `
-      <div class="res" data-id="${r.case_id}">
+    try {
+      const d = await api("/api/search", p);
+      if (d.error){ $("#results").textContent = d.error; return; }
+      const elapsed = ((performance.now() - started) / 1000).toFixed(1);
+      $("#results").innerHTML = `<p class="hint">${d.total} case(s)${d.total>d.results.length?`, showing ${d.results.length}`:""} · ${elapsed}s</p>` + d.results.map(r => `
+      <div class="res" data-id="${esc(r.case_id)}" role="button" tabindex="0" aria-label="Open case: ${esc(r.title)}">
         <div class="t">${esc(r.title)}</div>
         <div class="m">${esc(r.court)} · ${esc(r.decision_date)} ${r.citation?"· "+esc(r.citation):""} ${r.disposition?"· "+esc(r.disposition):""} ${r.hits?"· "+r.hits+" matching passage(s)":""}</div>
         ${r.curated.map(c=>`<div class="snip"><span class="stance-${esc(c.stance)}">${esc(c.stance||"")}</span> ${esc(c.summary||"")}</div>`).join("")}
@@ -134,15 +140,27 @@ function judgmentsTab(){
         <div>${r.issues.map(i=>`<span class="chip ${i.source==="curated"?"cur":""}">${esc(i.label||i.issue)}</span>`).join("")}
           <button class="small add" data-id="${r.case_id}">＋ export list</button></div>
       </div>`).join("");
-    document.querySelectorAll(".res").forEach(el => el.onclick = e => { if (!e.target.classList.contains("add")) openCase(el.dataset.id); });
-    document.querySelectorAll(".add").forEach(b => b.onclick = () => { if (!basket.includes(b.dataset.id)) basket.push(b.dataset.id); saveBasket(); });
+      document.querySelectorAll("#results .res").forEach(el => {
+        el.onclick = e => { if (!e.target.classList.contains("add")) openCase(el.dataset.id); };
+        el.onkeydown = e => { if ((e.key === "Enter" || e.key === " ") && !e.target.classList.contains("add")) { e.preventDefault(); openCase(el.dataset.id); } };
+      });
+      document.querySelectorAll("#results .add").forEach(b => b.onclick = () => { if (!basket.includes(b.dataset.id)) basket.push(b.dataset.id); saveBasket(); });
+    } catch (e) {
+      $("#results").textContent = "Search failed. Please try again.";
+    } finally {
+      $("#go").disabled = false;
+    }
   };
   $("#go").onclick = run; $("#q").onkeydown = e => { if (e.key === "Enter") run(); };
+  $("#resetSearch").onclick = () => { judgmentsTab(); $("#q").focus(); };
 }
 
 async function openCase(id){
   $("#right").innerHTML = "loading…";
-  const d = await api("/api/case", {id});
+  let d;
+  try { d = await api("/api/case", {id}); }
+  catch (e) { $("#right").textContent = "Could not load this judgment. Please try again."; return; }
+  if (d.error || !d.case) { $("#right").textContent = d.error || "Judgment not found."; return; }
   const c = d.case;
   $("#right").innerHTML = `
     <h2>${esc(c.title)}</h2>
