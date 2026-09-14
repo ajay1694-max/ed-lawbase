@@ -195,9 +195,11 @@ def build_public(a):
                         [(r[0], slug, *r[1:]) for r in meta_rows])
         cur = dk.execute(f"SELECT case_id, chunk_index, section_type, text FROM read_parquet('{fp}') ORDER BY case_id, chunk_index")
         while batch := cur.fetchmany(20000):
-            con.executemany("INSERT INTO chunks (case_id, chunk_index, section_type, text) VALUES (?,?,?,?)",
-                            [(cid, idx, st, BANNER.sub("", txt or "", count=1)) for cid, idx, st, txt in batch])
-            n_chunks += len(batch)
+            # only chunks of cases that survived the relevance filter - inserting the whole batch left
+            # 3,194 orphan chunks (1,627 dropped case_ids) searchable-but-unjoinable, found by Codex X4
+            rows = [(cid, idx, st, BANNER.sub("", txt or "", count=1)) for cid, idx, st, txt in batch if cid in keep]
+            con.executemany("INSERT INTO chunks (case_id, chunk_index, section_type, text) VALUES (?,?,?,?)", rows)
+            n_chunks += len(rows)
         con.commit()
         print(f"{slug:20s} {len(meta_rows):6d} cases kept, {dropped:5d} dropped (no ED statute in text, no ED in title)  "
               f"{n_chunks:9,d} chunks so far  {time.time() - t0:5.0f}s", flush=True)

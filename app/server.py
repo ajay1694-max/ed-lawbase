@@ -318,7 +318,8 @@ class Handler(BaseHTTPRequestHandler):
             if not user:
                 return self._send(401, json.dumps({"error": "wrong username or password"}).encode(), "application/json")
             token = auth.make_session(ROOT, user)
-            cookie = f"{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=1209600"
+            # Secure: hosted mode is only ever reached over HTTPS (Caddy / Render terminate TLS) - Codex X3
+            cookie = f"{COOKIE_NAME}={token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=1209600"
             return self._send(200, json.dumps({"ok": True, "is_admin": user["is_admin"]}).encode(), "application/json",
                               {"Set-Cookie": cookie})
         session = self._require_session(u.path)

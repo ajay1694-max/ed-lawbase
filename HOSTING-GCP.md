@@ -1,103 +1,73 @@
-# Hosting ED LawBase on a free Google Cloud VM
+# Hosting ED LawBase on a Google Cloud e2-micro VM
 
-This gives officers a URL with a login page, at **$0/month, forever** — Google's "Always Free" e2-micro VM has been unchanged since 2017 and includes a real persistent disk, unlike every "free tier" that dropped out during the hosting comparison (Render, Fly.io, Koyeb) or got quietly cut mid-2026 (Oracle).
+This puts the app at a URL with a login page, and costs **about US$3.60–3.72/month** — roughly half the cost of Render. That estimate assumes normal usage stays within the free data allowance.
 
-The trade-off against paying for Render: this is a real server you (briefly) administer, not a one-click platform. Budget **30-40 minutes** for the one-time setup below. After that, it runs unattended.
+## What it costs, exactly
 
-**A card is required to create a Google Cloud account** (identity verification) — **you will not be charged** as long as you stay within the limits this guide sets you up in (1 e2-micro VM, one region, a Standard — not SSD — disk, ≤30GB).
+| Item | Cost | Source |
+|---|---|---|
+| e2-micro VM in us-central1 / us-west1 / us-east1 | Free (Always Free tier) | [GCP Free Tier](https://docs.cloud.google.com/free/docs/free-cloud-features) |
+| 30 GB standard persistent disk | Free (Always Free tier) | same |
+| **External IPv4 address** | **US$0.005/hour ≈ US$3.60–3.72/month — NOT covered by the free tier** | [GCP external IP pricing](https://cloud.google.com/vpc/pricing-announce-external-ips) |
+| Outbound data, first 1 GB/month | Free | [GCP Free Tier](https://docs.cloud.google.com/free/docs/free-cloud-features) |
+| Outbound data beyond 1 GB/month (to India) | ≈ US$0.12/GiB | [GCP network pricing](https://cloud.google.com/vpc/network-pricing) |
 
----
+An earlier version of this file called the setup "$0 forever". **That was wrong**: every VM that is publicly reachable needs an external IPv4 address, and Google charges for it.
 
-## Part A — Create the VM (in the Google Cloud Console, in your browser)
+**Data usage.** Five officers each opening about 20 judgments per working day is estimated at 150–400 MB/month, which is under the free 1 GB. Heavy review of long judgments could exceed it, but every additional 5 GiB costs only about US$0.60.
 
-1. Go to **console.cloud.google.com** and sign in / create an account. Accept the free-trial prompt if shown (you won't need the trial credit for this).
-2. Top bar → **Select a project → New Project**. Name it `ed-lawbase`, create it, and make sure it's selected.
-3. Left menu → **Compute Engine → VM instances**. First visit prompts you to "Enable" the Compute Engine API — click it and wait ~1 minute.
-4. **Create Instance**, and set exactly these fields (anything not mentioned, leave default):
-   - **Name:** `ed-lawbase`
-   - **Region:** `us-central1` (Iowa) — must be this, `us-west1`, or `us-east1`; only these three qualify for the free e2-micro.
-   - **Machine configuration → Series:** `E2` → **Machine type:** `e2-micro`
-   - **Boot disk** → click **Change**: OS = **Debian**, Version = **Debian 12 (bookworm)**, Boot disk type = **Standard persistent disk** (not SSD or Balanced — those are not free), Size = **30 GB**. Click **Select**.
-   - **Firewall:** tick **Allow HTTP traffic** and **Allow HTTPS traffic**.
-5. Click **Create**. Wait ~30 seconds for the VM to start.
-6. Back on the VM instances list, click **Reserve a static external IP address** (or: VPC network → IP addresses → Reserve External Static Address → attach it to the `ed-lawbase` VM). A static IP costs nothing while it's attached to a running VM — it only costs money if reserved but unused. Note this IP address; call it `YOUR_VM_IP` below.
+**The deploy script creates a monthly budget of 1 unit of your billing currency**, with alerts at 1%, 50% and 100%. Budget alerts are notifications that arrive with a delay. **They do not cap spending.**
 
-## Part B — Set up the server (paste commands, one block at a time)
+## Deploying — the script does it
 
-7. On the VM instances list, click the **SSH** button next to `ed-lawbase` — this opens a terminal in your browser, already connected. Everything from here is pasted into that window.
+The steps are scripted in `deploy/deploy-gcp.ps1`. Codex drafted it through the cross-agent bridge on 14.09.2026, and Claude reviewed it and fixed two bugs.
 
-8. **Install what's needed** (paste as one block):
-```bash
-sudo apt-get update -qq
-sudo apt-get install -y python3-pip python3-venv git curl debian-keyring debian-archive-keyring apt-transport-https
-python3 -m pip install --break-system-packages --quiet python-docx
-```
+**Ajay alone does steps 1–4.** They need his own Google login and card.
 
-9. **Install Caddy** (gives you real HTTPS automatically, no domain needed — it uses your IP address itself as the hostname via the free `sslip.io` service):
-```bash
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
-sudo apt-get update -qq && sudo apt-get install -y caddy
-```
+1. Create or sign in to a Google account at console.cloud.google.com.
+2. Create a project (e.g. `ed-lawbase`) and attach a billing account to it.
+3. In PowerShell, run the script once with no flags. If `gcloud` is missing, it installs the Google Cloud CLI through winget and then stops:
+   ```powershell
+   & ".\deploy\deploy-gcp.ps1"
+   ```
+4. Open a **new** PowerShell window and sign in:
+   ```powershell
+   gcloud auth login
+   gcloud config set project YOUR_PROJECT_ID
+   ```
 
-10. **Get the code**:
-```bash
-cd ~ && git clone https://github.com/ajay1694-max/ed-lawbase.git
-cd ed-lawbase && python3 app/update.py
-```
-This downloads and verifies the ~230MB database (takes a minute or two — it's the same mechanism already tested against the GitHub release).
+**Then review and deploy.**
 
-11. **Set your admin password and session secret**, and create the systemd service that keeps LawBase running (replace `PICK_A_STRONG_PASSWORD` and `PICK_A_LONG_RANDOM_STRING` — do this now, in this paste, don't leave the placeholders):
-```bash
-sudo tee /etc/systemd/system/ed-lawbase.service > /dev/null <<'UNIT'
-[Unit]
-Description=ED LawBase
-After=network.target
+5. Run the script again with no flags. It prints the account, the project, the plan and the IPv4 charge, and creates nothing.
+6. Deploy:
+   ```powershell
+   & ".\deploy\deploy-gcp.ps1" -Execute -AcknowledgeExternalIpv4Charge
+   ```
+7. When prompted, type the **session-signing secret** (at least 32 random characters) and the **initial admin password** (at least 12 characters). Neither is ever written to a file. The secret goes to Google Secret Manager; the password goes over encrypted SSH.
+8. Open the `https://<ip>.sslip.io/` URL the script prints. The first load can take 20–30 seconds while the HTTPS certificate is issued. Sign in as `admin` and add officers from the **Admin** link.
 
-[Service]
-User=YOUR_LINUX_USERNAME
-WorkingDirectory=/home/YOUR_LINUX_USERNAME/ed-lawbase
-Environment=PORT=8080
-Environment=LAWBASE_ADMIN_PASSWORD=PICK_A_STRONG_PASSWORD
-Environment=LAWBASE_SECRET=PICK_A_LONG_RANDOM_STRING
-ExecStart=/usr/bin/python3 app/server.py
-Restart=always
-RestartSec=5
+### What the script builds
 
-[Install]
-WantedBy=multi-user.target
-UNIT
-```
-Replace `YOUR_LINUX_USERNAME` with the output of running `whoami` (two places in the block above) before pasting, and fill in the two secrets. Then:
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now ed-lawbase
-sudo systemctl status ed-lawbase --no-pager   # should say "active (running)"
-```
-
-12. **Point Caddy at it**, using your VM's IP via sslip.io so you get a real `https://` link with no domain purchase:
-```bash
-echo "YOUR_VM_IP.sslip.io {
-    reverse_proxy localhost:8080
-}" | sudo tee /etc/caddy/Caddyfile
-sudo systemctl restart caddy
-```
-Replace `YOUR_VM_IP` with the static IP from step 6, e.g. if it's `34.123.45.67`, the line reads `34.123.45.67.sslip.io { ... }`.
-
-13. **Open it**: `https://YOUR_VM_IP.sslip.io/` — the first load may take ~20-30 seconds while Caddy fetches its certificate. You should land on the sign-in page. Log in as `admin` with the password you set in step 11, and add officer accounts from the **Admin** link, exactly as described in `HOSTING.md`.
-
----
+- It installs the Google Cloud CLI if missing, and checks the login, project and attached billing.
+- It creates the budget alert **before** any compute resource.
+- **Network:** a dedicated VPC and a static IPv4 address. Ports 80 and 443 are open to the public. Port 22 is opened only to the IP of the machine running the script, and closed again when the script finishes. Port 8080 stays private.
+- **VM:** an e2-micro running Debian 12, with a 30 GB standard disk and a 2 GB swap file (the VM has only 1 GiB of RAM).
+- **App:** runs in a Python virtual environment, not the system Python. The database comes from the GitHub Release through `app/update.py`, with its checksum verified.
+- **Services:** systemd runs the app with a hardened unit, and reads the session secret from Secret Manager at start-up. Caddy provides automatic HTTPS for `<ip>.sslip.io` and adds `Secure` to session cookies.
 
 ## Day-to-day
 
-- **Adding/removing officers, resetting passwords:** same Admin page as the Render setup — nothing here differs.
-- **Updating the case-law data** after a new release: SSH in again and run:
+- **Officer accounts:** add, remove and reset them on the Admin page.
+- **Updating the case-law data after a new release.** SSH in and run the command below. Do not delete the database first: `update.py` verifies the download and replaces the file atomically, so if the download fails the old database stays in place.
   ```bash
-  cd ~/ed-lawbase && rm data/lawbase.sqlite && python3 app/update.py && sudo systemctl restart ed-lawbase
+  cd ~/ed-lawbase && sudo systemctl stop ed-lawbase && .venv/bin/python app/update.py && sudo systemctl start ed-lawbase
   ```
-- **If the VM ever reboots** (rare, e.g. a Google maintenance event): the systemd service and Caddy both restart automatically — no action needed.
-- **Staying in the free tier:** don't change the machine type away from `e2-micro`, don't add a second VM in your project, don't switch the disk to SSD/Balanced, and keep the disk at or under 30GB. One static IP attached to one running VM is free.
+- **Reboots:** the app and Caddy restart automatically.
+- **Staying at ~US$3.65/month:**
+  - keep one VM, and keep it e2-micro;
+  - keep the disk standard (not SSD or Balanced) and no larger than 30 GB;
+  - release the static IP if you ever delete the VM, because a reserved IP that isn't attached to anything is also charged.
 
 ## What stays off this VM
 
-The internal pack (`ed-lawbase-internal`) is never deployed here — same rule as the Render path. This VM only ever serves the public repository's data.
+Never deploy the internal pack (`ed-lawbase-internal`). This VM serves only the public repository's data.

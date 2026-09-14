@@ -1,4 +1,4 @@
-> **Costs ~$7-8/month.** For a genuinely free (if slightly more hands-on) alternative, see [HOSTING-GCP.md](HOSTING-GCP.md) — a Google Cloud "Always Free" VM. This Render path stays here for whoever wants zero server maintenance and doesn't mind the monthly cost.
+> **Costs ~$7-8/month.** For a cheaper alternative (~$3.60-3.72/month — the VM and disk are free, but the public IPv4 address is not), see [HOSTING-GCP.md](HOSTING-GCP.md). This Render path stays here for whoever wants zero server maintenance and doesn't mind the higher monthly cost.
 
 # Hosting ED LawBase on Render — runbook
 
