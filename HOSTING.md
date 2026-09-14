@@ -1,3 +1,5 @@
+> **Costs ~$7-8/month.** For a genuinely free (if slightly more hands-on) alternative, see [HOSTING-GCP.md](HOSTING-GCP.md) — a Google Cloud "Always Free" VM. This Render path stays here for whoever wants zero server maintenance and doesn't mind the monthly cost.
+
 # Hosting ED LawBase on Render — runbook
 
 This deploys the search app to a URL, with a login page and an admin panel for adding officer accounts. Officers get a link and a username/password — nothing to download or install.
