@@ -1,4 +1,4 @@
 {
-  "repo": "",
-  "note": "Set repo to \"owner/name\" once the public GitHub repository exists. update.py fetches lawbase-data-*.zip from its latest Release."
+  "repo": "ajay1694-max/ed-lawbase",
+  "note": "update.py and server.py's ensure_data() fetch lawbase-data-*.zip from this repo's latest Release."
 }
