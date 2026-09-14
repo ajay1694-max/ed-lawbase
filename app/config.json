@@ -1,0 +1,4 @@
+{
+  "repo": "",
+  "note": "Set repo to \"owner/name\" once the public GitHub repository exists. update.py fetches lawbase-data-*.zip from its latest Release."
+}

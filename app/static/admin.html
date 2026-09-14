@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ED LawBase — Admin</title>
+<style>
+  :root { --navy:#1f3a5f; --ink:#1d2430; --muted:#5b6575; --line:#dde3ea; --bg:#f6f8fb; --bad:#b3261e; --good:#1f7a4d; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 "Segoe UI", Calibri, Arial, sans-serif; color:var(--ink); background:var(--bg); }
+  header { background:var(--navy); color:#fff; padding:10px 18px; display:flex; align-items:center; gap:14px; }
+  header h1 { font-size:17px; margin:0; }
+  header a { color:#fff; opacity:.85; text-decoration:none; font-size:13px; margin-left:auto; }
+  main { max-width:640px; margin:24px auto; padding:0 18px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:6px; padding:16px 18px; margin-bottom:16px; }
+  h2 { font-size:15px; margin:0 0 10px; color:var(--navy); }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  td, th { padding:6px 4px; border-bottom:1px solid var(--line); text-align:left; }
+  input, select { font:inherit; padding:6px 7px; border:1px solid var(--line); border-radius:4px; }
+  button { background:var(--navy); color:#fff; border:0; padding:6px 12px; border-radius:4px; cursor:pointer; font:inherit; }
+  button.danger { background:#fff; color:var(--bad); border:1px solid var(--bad); }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
+  .msg { font-size:12.5px; margin-top:8px; min-height:1.3em; }
+  .msg.ok { color:var(--good); } .msg.err { color:var(--bad); }
+</style>
+</head>
+<body>
+<header><h1>ED LawBase — Admin</h1><a href="/">← back to search</a><a href="#" id="logout">Sign out</a></header>
+<main>
+  <div class="card">
+    <h2>Officer accounts</h2>
+    <table id="tbl"><thead><tr><th>Username</th><th>Role</th><th>Created</th><th></th></tr></thead><tbody></tbody></table>
+  </div>
+  <div class="card">
+    <h2>Add an officer</h2>
+    <div class="row">
+      <input id="nu" placeholder="username">
+      <input id="np" type="password" placeholder="temporary password">
+      <label><input type="checkbox" id="na"> admin</label>
+      <button id="add">Add</button>
+    </div>
+    <div class="msg" id="addMsg"></div>
+  </div>
+  <div class="card">
+    <h2>Reset a password</h2>
+    <div class="row">
+      <input id="ru" placeholder="username">
+      <input id="rp" type="password" placeholder="new password">
+      <button id="reset">Reset</button>
+    </div>
+    <div class="msg" id="resetMsg"></div>
+  </div>
+</main>
+<script>
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+async function load(){
+  const d = await (await fetch("/api/users")).json();
+  document.querySelector("#tbl tbody").innerHTML = d.users.map(u => `
+    <tr><td>${esc(u.username)}</td><td>${u.is_admin ? "admin" : "officer"}</td><td>${esc(u.created)}</td>
+    <td><button class="danger" data-u="${esc(u.username)}">Remove</button></td></tr>`).join("");
+  document.querySelectorAll("button.danger").forEach(b => b.onclick = async () => {
+    if (!confirm(`Remove ${b.dataset.u}?`)) return;
+    const r = await fetch("/api/users/delete", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({username: b.dataset.u})});
+    if (r.ok) load(); else alert((await r.json()).error || "failed");
+  });
+}
+document.getElementById("add").onclick = async () => {
+  const username = document.getElementById("nu").value, password = document.getElementById("np").value, is_admin = document.getElementById("na").checked;
+  const r = await fetch("/api/users/create", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({username, password, is_admin})});
+  const m = document.getElementById("addMsg");
+  if (r.ok){ m.textContent = `Added ${username}. Tell them this temporary password.`; m.className = "msg ok"; document.getElementById("nu").value = document.getElementById("np").value = ""; load(); }
+  else { m.textContent = (await r.json()).error || "failed"; m.className = "msg err"; }
+};
+document.getElementById("reset").onclick = async () => {
+  const username = document.getElementById("ru").value, password = document.getElementById("rp").value;
+  const r = await fetch("/api/users/password", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({username, password})});
+  const m = document.getElementById("resetMsg");
+  if (r.ok){ m.textContent = `Password reset for ${username}.`; m.className = "msg ok"; document.getElementById("ru").value = document.getElementById("rp").value = ""; }
+  else { m.textContent = (await r.json()).error || "failed"; m.className = "msg err"; }
+};
+document.getElementById("logout").onclick = async (e) => { e.preventDefault(); await fetch("/api/logout", {method:"POST"}); location.href = "/login.html"; };
+load();
+</script>
+</body>
+</html>

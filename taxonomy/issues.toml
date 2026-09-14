@@ -1,0 +1,124 @@
+# Issue taxonomy for ED LawBase.
+# Each issue is tagged automatically with an SQLite FTS5 query, run once over the judgment index at build
+# time; hits are counted per case. FTS5 notes:
+#   - matching is case-insensitive, and punctuation splits tokens: "s.45(1)" is matched by the phrase "section 45 1"
+#     and "money-laundering" by "money laundering"
+#   - operator precedence is NOT > AND > OR, so bracket generously
+#   - NEAR("a b" c, 10) means both phrases within 10 tokens; word* is a prefix match
+# Auto tags are leads. Curated tags in enrich/cases/*.md override them.
+
+# ---------------------------------------------------------------- PMLA
+[pmla.proceeds_of_crime]
+label = "Proceeds of crime - s.2(1)(u)"
+fts = '"proceeds of crime" AND ("2 1 u" OR definition OR "derived or obtained")'
+
+[pmla.s3_offence]
+label = "Offence of money-laundering - s.3"
+fts = '"offence of money laundering" OR NEAR("section 3" pmla, 6) OR NEAR("section 3" "prevention of money", 8)'
+
+[pmla.scheduled_offence]
+label = "Scheduled / predicate offence"
+fts = '"scheduled offence" OR "predicate offence"'
+
+[pmla.s5_attachment]
+label = "Provisional attachment - s.5"
+fts = '"provisional attachment" OR "provisionally attached" OR NEAR("section 5" attachment, 10)'
+
+[pmla.s8_adjudication]
+label = "Adjudicating Authority / confirmation - s.8"
+fts = '"adjudicating authority" AND ("section 8" OR confirm*)'
+
+[pmla.s17_search]
+label = "Search and seizure / freezing - s.17"
+fts = '"search and seizure" OR "freezing order" OR "section 17 1a" OR NEAR("section 17" search, 10) OR NEAR("section 17" seizure, 10)'
+
+[pmla.s19_arrest]
+label = "Arrest - s.19 (grounds, reasons to believe)"
+fts = '"grounds of arrest" OR "section 19 1" OR NEAR("section 19" arrest, 10)'
+
+[pmla.s24_burden]
+label = "Burden of proof / presumption - ss.23-24"
+fts = '("section 24" OR "burden of proof") AND ("money laundering" OR pmla)'
+
+[pmla.s44_cognizance]
+label = "Special Court, cognizance and jurisdiction - ss.43-44"
+fts = '("special court" OR "section 44") AND (cognizance OR committed OR "territorial jurisdiction")'
+
+[pmla.s45_bail]
+label = "Bail and twin conditions - s.45"
+fts = '"twin conditions" OR "section 45 1" OR NEAR("section 45" bail, 10)'
+
+[pmla.s50_statements]
+label = "Statements / summons - s.50"
+fts = 'NEAR("section 50" statement*, 10) OR NEAR("section 50" summons, 10)'
+
+[pmla.s66_2_sharing]
+label = "Information sharing - s.66(2)"
+fts = '"section 66 2"'
+
+[pmla.pardon_approver]
+label = "Tender of pardon / approver (CrPC 306-308, BNSS 343-345)"
+fts = '"tender of pardon" OR "tendered pardon" OR "pardon tendered" OR "grant of pardon" OR "granted pardon" OR approver'
+
+[pmla.atfp_appeal]
+label = "Appellate Tribunal (ATFP) / s.42 appeal"
+fts = '"appellate tribunal" AND ("money laundering" OR pmla OR "section 26" OR "section 42")'
+
+[pmla.s63_false_info]
+label = "False information / non-cooperation - s.63"
+fts = 'NEAR("section 63" pmla, 10) OR NEAR("section 63" "money laundering", 10)'
+
+# ---------------------------------------------------------------- FEMA
+[fema.contravention]
+label = "FEMA contravention - ss.3, 4, 6, 7, 8"
+fts = '("foreign exchange management" OR fema) AND contravention*'
+
+[fema.s13_penalty]
+label = "FEMA penalty - s.13"
+fts = 'NEAR("section 13" fema, 10) OR NEAR("section 13" "foreign exchange management", 12)'
+
+[fema.s16_adjudication]
+label = "FEMA adjudication - s.16"
+fts = 'NEAR("section 16" fema, 10) OR NEAR("section 16" "foreign exchange management", 12)'
+
+[fema.s19_appeal_predeposit]
+label = "FEMA appeal and pre-deposit - ss.17-19, 35"
+fts = '("pre deposit" OR predeposit OR "section 19") AND (fema OR "foreign exchange management")'
+
+[fema.s37a_seizure]
+label = "FEMA seizure of equivalent assets - s.37A"
+fts = '"section 37a"'
+
+[fema.compounding]
+label = "Compounding"
+fts = '(compounding OR compounded) AND (fema OR "foreign exchange")'
+
+[fera.legacy]
+label = "FERA 1973 (legacy / sunset proceedings)"
+fts = '"foreign exchange regulation act" OR fera'
+
+# ---------------------------------------------------------------- FEOA
+[feoa.declaration]
+label = "Fugitive economic offender - declaration and application (ss.4, 12)"
+fts = '"fugitive economic offender" OR "fugitive economic offenders"'
+
+[feoa.s14_disentitlement]
+label = "Disentitlement to defend civil claims - s.14"
+fts = 'NEAR("section 14" "fugitive economic", 15)'
+
+# ---------------------------------------------------------------- cross-cutting procedure
+[proc.quashing]
+label = "Quashing - s.482 CrPC / s.528 BNSS / Art.226"
+fts = '("section 482" OR "section 528") AND quash*'
+
+[proc.sanction_197]
+label = "Sanction for public servants - s.197 CrPC / s.218 BNSS"
+fts = '("section 197" OR "section 218") AND sanction'
+
+[proc.habeas_art21]
+label = "Habeas corpus / Article 22 challenge to arrest"
+fts = '"habeas corpus" OR "article 22 1"'
+
+[proc.discharge]
+label = "Discharge"
+fts = '"discharge application" OR "discharge petition" OR "discharged the accused" OR "section 227" OR "section 250"'

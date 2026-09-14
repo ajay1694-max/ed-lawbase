@@ -1,0 +1,19 @@
+# Render Blueprint for ED LawBase. In the Render dashboard: New -> Blueprint -> pick this repo.
+# Render reads this file and proposes the service below; you still set the two secret env vars
+# yourself in the dashboard (never commit real passwords/secrets into this file or the repo).
+services:
+  - type: web
+    name: ed-lawbase
+    runtime: python
+    plan: starter          # smallest plan with an always-on instance and a mountable disk
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app/server.py
+    disk:
+      name: lawbase-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 2             # holds lawbase.sqlite (~900MB today) + auth.sqlite + secret.key, with headroom
+    envVars:
+      - key: LAWBASE_ADMIN_PASSWORD
+        sync: false         # set in the Render dashboard (Environment tab) - not stored in git
+      - key: LAWBASE_SECRET
+        sync: false         # set in the Render dashboard - any long random string

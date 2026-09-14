@@ -1,0 +1,4 @@
+#!/bin/sh
+# ED LawBase: block any commit that would put internal material in the public tier.
+# Install: cp pipeline/hooks/pre-commit .git/hooks/pre-commit
+python pipeline/guard.py || { echo "COMMIT BLOCKED by pipeline/guard.py - remove internal material first."; exit 1; }

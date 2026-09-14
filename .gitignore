@@ -1,0 +1,9 @@
+# built artefacts - published as Release assets, never committed
+data/
+internal/
+dist/
+*.sqlite
+*.sqlite.building
+__pycache__/
+# the internal pack lives in a separate folder and must never be copied in here
+ed-lawbase-internal/
