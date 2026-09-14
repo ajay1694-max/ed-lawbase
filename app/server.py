@@ -27,6 +27,12 @@ INTERNAL_DBS = sorted(glob.glob(os.path.join(ROOT, "internal", "*.sqlite")))
 STATIC = os.path.join(APP, "static")
 HOSTED = bool(os.environ.get("PORT"))  # the one switch: local desktop use never sets this
 COOKIE_NAME = "lawbase_session"
+_METADATA_INDEX = None
+_METADATA_TOKEN_INDEX = None
+_GENERIC_METADATA_WORDS = frozenset({
+    "anr", "another", "appln", "application", "bail", "court", "directorate",
+    "enforcement", "high", "india", "ors", "state", "union", "versus", "vs",
+})
 
 
 def connect():
@@ -53,6 +59,81 @@ def _search_normalize(value):
     return " ".join(re.findall(r"[a-z0-9]+", (value or "").lower()))
 
 
+def _metadata_query(query):
+    """Return the normalized query only when metadata promotion is useful.
+
+    Generic one-word searches such as ``bail`` and ``enforcement`` are requests
+    for judgment text, not case titles.  A citation/case number (digits present)
+    or a multi-word name with at least one distinctive word is a locator query.
+    """
+    needle = _search_normalize(query)
+    words = tuple(needle.split())
+    if not words:
+        return None
+    if any(ch.isdigit() for ch in needle):
+        return needle, words
+    if len(words) >= 2 and any(word not in _GENERIC_METADATA_WORDS for word in words):
+        return needle, words
+    return None
+
+
+def _metadata_index(c):
+    """Cache normalized public-case metadata once per process."""
+    global _METADATA_INDEX, _METADATA_TOKEN_INDEX
+    if _METADATA_INDEX is None:
+        rows = c.execute("""SELECT c.case_id, c.title, c.citation, c.case_number,
+                            coalesce(e.citation_extra, '') AS citation_extra
+                            FROM cases c LEFT JOIN enrich_cases e USING (case_id)""")
+        index, token_index = {}, {}
+        for row in rows:
+            title = _search_normalize(row["title"])
+            citation = _search_normalize(" ".join((row["citation"] or "", row["citation_extra"] or "")))
+            case_number = _search_normalize(row["case_number"])
+            combined_words = frozenset(" ".join((title, citation, case_number)).split())
+            entry = (row["case_id"], title, citation, case_number,
+                     combined_words, frozenset(title.split()))
+            index[row["case_id"]] = entry
+            for word in combined_words:
+                token_index.setdefault(word, set()).add(row["case_id"])
+        _METADATA_TOKEN_INDEX = {word: frozenset(ids) for word, ids in token_index.items()}
+        _METADATA_INDEX = index  # assign the sentinel last so concurrent first requests see both caches
+    return _METADATA_INDEX
+
+
+def _metadata_candidates(c, words):
+    """Use the cached token index to avoid scanning every case per query."""
+    index = _metadata_index(c)
+    pools = [_METADATA_TOKEN_INDEX.get(word, frozenset()) for word in words]
+    if not pools or any(not pool for pool in pools):
+        return index, ()
+    candidates = set(min(pools, key=len))
+    for pool in pools:
+        candidates.intersection_update(pool)
+        if not candidates:
+            break
+    return index, sorted(candidates)
+
+
+def _metadata_priority_cached(entry, needle, words):
+    """Return the direct-match priority for one pre-normalized metadata entry."""
+    _, title, citation, case_number, combined_words, title_words = entry
+    if not all(word in combined_words for word in words):
+        return None
+    if any(ch.isdigit() for ch in needle):
+        return (
+            int(citation == needle), int(case_number == needle),
+            int(needle in citation), int(needle in case_number),
+            int(title == needle), int(title.startswith(needle)), int(needle in title),
+            int(all(word in title_words for word in words)),
+        )
+    return (
+        int(title == needle), int(title.startswith(needle)), int(needle in title),
+        int(case_number == needle), int(needle in case_number),
+        int(citation == needle), int(needle in citation),
+        int(all(word in title_words for word in words)),
+    )
+
+
 def _metadata_priority(row, query):
     """Rank direct metadata matches ahead of judgments that merely cite the query.
 
@@ -60,26 +141,16 @@ def _metadata_priority(row, query):
     Python's stable sort can promote exact/prefix/phrase matches without disturbing
     the existing FTS order among otherwise equal cases.
     """
-    needle = _search_normalize(query)
-    words = needle.split()
-    if not words:
+    parsed = _metadata_query(query)
+    if parsed is None:
         return None
+    needle, words = parsed
     title = _search_normalize(row["title"])
     citation = _search_normalize(row["citation"])
     case_number = _search_normalize(row["case_number"])
-    combined = " ".join((title, citation, case_number))
-    if not all(word in combined.split() for word in words):
-        return None
-    return (
-        int(title == needle),
-        int(title.startswith(needle)),
-        int(needle in title),
-        int(case_number == needle),
-        int(needle in case_number),
-        int(citation == needle),
-        int(needle in citation),
-        int(all(word in title.split() for word in words)),
-    )
+    entry = (row["case_id"] if "case_id" in row.keys() else "", title, citation, case_number,
+             frozenset(" ".join((title, citation, case_number)).split()), frozenset(title.split()))
+    return _metadata_priority_cached(entry, needle, words)
 
 
 def attribution(c):
@@ -175,16 +246,22 @@ def api_search(c, p):
         # A person's/case's name or a citation is often used to locate the case
         # itself.  FTS alone can rank a later judgment quoting that case above the
         # source judgment, so merge direct metadata matches and promote them.
-        if not raw:
+        parsed_metadata = None if raw else _metadata_query(q)
+        if parsed_metadata is not None:
+            needle, words = parsed_metadata
             priorities = {}
             known = set(order)
-            meta_sql = f"""SELECT c.case_id, c.title, c.citation, c.case_number
-                           FROM cases c WHERE 1=1{extra}"""
-            for meta in c.execute(meta_sql, args):
-                priority = _metadata_priority(meta, q)
+            eligible = None
+            if filt:
+                eligible = {r[0] for r in c.execute(f"SELECT c.case_id FROM cases c WHERE 1=1{extra}", args)}
+            index, candidates = _metadata_candidates(c, words)
+            for cid in candidates:
+                if eligible is not None and cid not in eligible:
+                    continue
+                meta = index[cid]
+                priority = _metadata_priority_cached(meta, needle, words)
                 if priority is None:
                     continue
-                cid = meta["case_id"]
                 priorities[cid] = priority
                 if cid not in known:
                     best[cid] = {"hits": 0, "snips": []}
@@ -296,6 +373,12 @@ TYPES = {".html": "text/html; charset=utf-8", ".js": "application/javascript", "
 
 
 class Handler(BaseHTTPRequestHandler):
+    server_version = "ED-LawBase"
+    sys_version = ""
+
+    def version_string(self):
+        return self.server_version
+
     def log_message(self, *a):
         pass
 
@@ -306,7 +389,8 @@ class Handler(BaseHTTPRequestHandler):
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
-        self.wfile.write(data)
+        if self.command != "HEAD":
+            self.wfile.write(data)
 
     def _session(self):
         raw = self.headers.get("Cookie")
@@ -364,6 +448,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, open(path, "rb").read(), TYPES.get(os.path.splitext(name)[1], "application/octet-stream"))
         else:
             self._send(404, b"not found", "text/plain")
+
+    def do_HEAD(self):
+        """Serve the same status and headers as GET without a response body."""
+        return self.do_GET()
 
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
