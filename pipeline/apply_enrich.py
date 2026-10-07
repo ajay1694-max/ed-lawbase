@@ -12,7 +12,8 @@ What it does, all in one transaction:
   2. auto tags     <- FTS5 query run for each issue that had no 'auto' rows (new issues only);
   3. statutes      <- pipeline/statute_addenda.jsonl, for acts in STATUTE_ACTS not yet in the database;
   4. cases         <- metadata corrections in pipeline/case_fixes.json;
-  5. enrich_cases, briefs, curated case_issues <- enrich/ (public tier only, via build.load_enrichment).
+  5. enrich_cases, briefs, curated case_issues <- enrich/ (public tier only, via build.load_enrichment);
+  6. chunk_case    <- compact rowid -> case_id map that lets search rank passages without reading their text.
 It never touches chunks, and touches cases only for the listed metadata fixes in pipeline/case_fixes.json. Safe to re-run: a second run changes nothing.
 Restart the app afterwards - it caches case metadata (citation_extra) per process.
 """
@@ -20,7 +21,7 @@ import argparse, collections, datetime, json, os, sqlite3, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from build import ROOT, STATUTE_ACTS, load_enrichment, load_taxonomy  # noqa: E402
+from build import ROOT, STATUTE_ACTS, build_chunk_case, load_enrichment, load_taxonomy  # noqa: E402
 
 
 def counts(con):
@@ -87,6 +88,8 @@ def main():
                     con.execute(f"UPDATE cases SET {col}=? WHERE case_id=?", (val, cid))
                     print(f"case fix: {cid}.{col}: {cur[0]!r} -> {val!r}")
     n = load_enrichment(con, ROOT, "public")
+    if build_chunk_case(con):
+        print("built chunk_case (compact rowid -> case_id map used by search)")
     con.execute("INSERT OR REPLACE INTO meta VALUES ('enriched', ?)", (datetime.date.today().isoformat(),))
     after = counts(con)
     print("auto-tagged new issues:", ", ".join(r[0] for r in new) or "none")

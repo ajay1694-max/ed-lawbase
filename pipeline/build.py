@@ -144,6 +144,19 @@ def load_enrichment(con, root, building):
     return n
 
 
+def build_chunk_case(con):
+    """Compact rowid -> case_id map (about 5 MB). Search joins FTS hits to it instead of to the chunks table,
+    so ranking never has to read passage text. Returns True if it was (re)built."""
+    have = con.execute("SELECT count(*) FROM sqlite_master WHERE name='chunk_case'").fetchone()[0]
+    if have and con.execute("SELECT count(*) FROM chunk_case").fetchone()[0] == \
+            con.execute("SELECT count(*) FROM chunks").fetchone()[0]:
+        return False
+    con.execute("DROP TABLE IF EXISTS chunk_case")
+    con.execute("CREATE TABLE chunk_case (rowid INTEGER PRIMARY KEY, case_id TEXT NOT NULL)")
+    con.execute("INSERT INTO chunk_case SELECT rowid, case_id FROM chunks")
+    return True
+
+
 def tag(con, rules):
     """Issue tags and Act flags from FTS5 queries over the finished index."""
     t = time.time()
@@ -207,6 +220,7 @@ def build_public(a):
     con.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')")
     print(f"judgment index built  {time.time() - t0:.0f}s", flush=True)
     tag(con, rules)
+    build_chunk_case(con)
 
     ids = ",".join(f"'{k}'" for k in STATUTE_ACTS)
     srows = dk.execute(f"""SELECT act_id, title, chapter, section_number, section_title, text, source_url

@@ -14,7 +14,7 @@ HOSTED (e.g. Render): the platform sets $PORT, which switches HOSTED on automati
 
 Reads data\lawbase.sqlite (public tier) and, when present, internal\*.sqlite (internal pack).
 """
-import glob, http.cookies, json, os, re, socket, sqlite3, sys, urllib.parse, webbrowser
+import glob, gzip, http.cookies, json, os, queue, re, socket, sqlite3, sys, threading, time, urllib.parse, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP = os.path.dirname(os.path.abspath(__file__))
@@ -35,12 +35,45 @@ _GENERIC_METADATA_WORDS = frozenset({
 })
 
 
+_POOL = queue.LifoQueue()   # reused read-only connections: SQLite's page cache survives between requests
+_HAS_CHUNK_CASE = None      # True when the compact rowid -> case_id map (pipeline/optimize_db.py) exists
+
+
 def connect():
-    c = sqlite3.connect(f"file:{PUBLIC_DB}?mode=ro", uri=True)
+    try:
+        return _POOL.get_nowait()
+    except queue.Empty:
+        pass
+    c = sqlite3.connect(f"file:{PUBLIC_DB}?mode=ro", uri=True, check_same_thread=False)
     c.row_factory = sqlite3.Row
+    c.execute("PRAGMA cache_size = -16384")      # 16 MB of page cache per connection
+    c.execute("PRAGMA mmap_size = 268435456")    # read through the OS page cache instead of copying
+    c.execute("PRAGMA temp_store = MEMORY")
     if INTERNAL_DBS:
         c.execute("ATTACH DATABASE ? AS internal", (f"file:{INTERNAL_DBS[0]}?mode=ro",))
     return c
+
+
+def release(c):
+    """Return a connection to the pool (at most 4 kept); close the rest."""
+    try:
+        c.rollback()
+    except sqlite3.Error:
+        c.close()
+        return
+    if _POOL.qsize() < 4:
+        _POOL.put(c)
+    else:
+        c.close()
+
+
+def chunk_map(c):
+    """Table that maps an FTS rowid to its case: the compact map if present, else the chunks table itself."""
+    global _HAS_CHUNK_CASE
+    if _HAS_CHUNK_CASE is None:
+        _HAS_CHUNK_CASE = c.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_case'").fetchone() is not None
+    return "chunk_case" if _HAS_CHUNK_CASE else "chunks"
 
 
 def schemas():
@@ -198,7 +231,8 @@ def api_search(c, p):
     if p.get("issue"):
         filt.append("c.case_id IN (SELECT case_id FROM case_issues WHERE issue = ?)"); args.append(p["issue"])
     extra = "".join(" AND " + f for f in filt)
-    best, order = {}, []
+    cmap = chunk_map(c)
+    best, order, best_rids = {}, [], {}
     if q:
         # Default: every word/phrase must appear somewhere in the JUDGMENT (not necessarily one passage).
         # within=chunk, or explicit FTS operators, keeps the stricter same-passage matching.
@@ -210,7 +244,7 @@ def api_search(c, p):
         if case_level:
             for t in terms:
                 ids = {r[0] for r in c.execute(f"""SELECT DISTINCT k.case_id FROM chunks_fts
-                        JOIN chunks k ON k.rowid = chunks_fts.rowid JOIN cases c ON c.case_id = k.case_id
+                        JOIN {cmap} k ON k.rowid = chunks_fts.rowid JOIN cases c ON c.case_id = k.case_id
                         WHERE chunks_fts MATCH ?{extra}""", [phrase(t)] + args)}
                 common = ids if common is None else common & ids
                 if not common:
@@ -222,22 +256,26 @@ def api_search(c, p):
             match = " OR ".join(phrase(t) for t in terms)
         else:
             match = fts_query(q)
-        sql = f"""SELECT k.case_id, bm25(chunks_fts) AS score,
-                  snippet(chunks_fts, 0, char(1), char(2), ' … ', 30) AS snip
-                  FROM chunks_fts JOIN chunks k ON k.rowid = chunks_fts.rowid JOIN cases c ON c.case_id = k.case_id
+        # Phase 1 ranks passages from the FTS index and the compact map only - no passage text is read.
+        sql = f"""SELECT chunks_fts.rowid AS rid, k.case_id, bm25(chunks_fts) AS score
+                  FROM chunks_fts JOIN {cmap} k ON k.rowid = chunks_fts.rowid JOIN cases c ON c.case_id = k.case_id
                   WHERE chunks_fts MATCH ?{extra}{restrict} ORDER BY score LIMIT 3000"""
         try:
             rows = c.execute(sql, [match] + args).fetchall()
         except sqlite3.OperationalError:
-            rows = c.execute(sql, ['"' + q.replace('"', "") + '"'] + args).fetchall()
+            match = '"' + q.replace('"', "") + '"'
+            rows = c.execute(sql, [match] + args).fetchall()
+        snip_rids = {}
         for r in rows:
             b = best.get(r["case_id"])
             if b is None:
                 best[r["case_id"]] = b = {"hits": 0, "snips": []}
                 order.append(r["case_id"])
             b["hits"] += 1
-            if len(b["snips"]) < 2:
-                b["snips"].append(r["snip"])
+            snip_rids.setdefault(r["case_id"], [])
+            if len(snip_rids[r["case_id"]]) < 2:
+                snip_rids[r["case_id"]].append(r["rid"])
+        best_rids = snip_rids  # snippets are built later, only for the cases actually returned
         for x in sorted(common or ()):  # matching cases whose passages fell outside the snippet window
             if x not in best:
                 best[x] = {"hits": 0, "snips": []}
@@ -273,8 +311,20 @@ def api_search(c, p):
         for r in c.execute(f"SELECT c.case_id FROM cases c WHERE 1=1{extra} ORDER BY c.decision_date DESC LIMIT 2000", args):
             best[r[0]] = {"hits": 0, "snips": []}
             order.append(r[0])
+    page = order[:limit]
+    if q and best_rids:
+        # Phase 2: snippets for at most two passages of each returned case (<= 2 x limit rows of text).
+        want = [rid for cid in page for rid in best_rids.get(cid, ())]
+        snips = {}
+        for rid in want:
+            r = c.execute("""SELECT snippet(chunks_fts, 0, char(1), char(2), ' … ', 30) FROM chunks_fts
+                             WHERE chunks_fts MATCH ? AND rowid = ?""", (match, rid)).fetchone()
+            if r:
+                snips[rid] = r[0]
+        for cid in page:
+            best[cid]["snips"] = [snips[rid] for rid in best_rids.get(cid, ()) if rid in snips]
     out = []
-    for cid in order[:limit]:
+    for cid in page:
         m = dict(c.execute("SELECT * FROM cases WHERE case_id=?", (cid,)).fetchone())
         out.append({**m, **best[cid], "issues": issue_labels(c, cid)[:6], "curated": curated(c, cid)})
     return {"results": out, "total": len(order)}
@@ -371,6 +421,43 @@ ADMIN_ROUTES = {"/api/users": api_users_list}
 PUBLIC_PATHS = {"/login.html", "/api/login"}  # reachable with no session, only when HOSTED
 TYPES = {".html": "text/html; charset=utf-8", ".js": "application/javascript", ".css": "text/css"}
 
+# Response cache for read-only API calls. The data only changes when lawbase.sqlite is replaced or patched,
+# so entries are keyed to the file's modification time and dropped wholesale when it changes.
+_CACHE, _CACHE_LOCK, _CACHE_BUDGET = {}, threading.Lock(), 48 * 1024 * 1024
+_CACHE_STATE = {"stamp": None, "bytes": 0}
+GZIP_TYPES = ("application/json", "text/", "application/javascript")
+
+
+def _db_stamp():
+    try:
+        return os.stat(PUBLIC_DB).st_mtime_ns
+    except OSError:
+        return None
+
+
+def cache_get(key):
+    with _CACHE_LOCK:
+        stamp = _db_stamp()
+        if stamp != _CACHE_STATE["stamp"]:
+            _CACHE.clear(); _CACHE_STATE.update(stamp=stamp, bytes=0)
+            return None
+        hit = _CACHE.pop(key, None)
+        if hit is not None:
+            _CACHE[key] = hit  # move to the end: most recently used
+        return hit
+
+
+def cache_put(key, raw, packed):
+    size = len(raw) + len(packed)
+    if size > _CACHE_BUDGET // 8:
+        return
+    with _CACHE_LOCK:
+        _CACHE[key] = (raw, packed)
+        _CACHE_STATE["bytes"] += size
+        while _CACHE_STATE["bytes"] > _CACHE_BUDGET and _CACHE:
+            old = _CACHE.pop(next(iter(_CACHE)))
+            _CACHE_STATE["bytes"] -= len(old[0]) + len(old[1])
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "ED-LawBase"
@@ -382,7 +469,16 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def _send(self, code, data, ctype, extra=None):
+    def _accepts_gzip(self):
+        return "gzip" in (self.headers.get("Accept-Encoding") or "")
+
+    def _send(self, code, data, ctype, extra=None, packed=None):
+        """Send a response; text and JSON over 1 KB go gzip-compressed when the client accepts it."""
+        extra = dict(extra or {})
+        if self._accepts_gzip() and ctype.startswith(GZIP_TYPES) and len(data) > 1024:
+            data = packed if packed is not None else gzip.compress(data, compresslevel=5)
+            extra["Content-Encoding"] = "gzip"
+            extra["Vary"] = "Accept-Encoding"
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
@@ -431,10 +527,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(500, json.dumps({"error": str(e)}).encode(), "application/json")
         if u.path in ROUTES:
             p = {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
+            key = (u.path, tuple(sorted(p.items())))
+            hit = cache_get(key)
+            if hit is not None:
+                return self._send(200, hit[0], "application/json", {"X-Cache": "hit"}, packed=hit[1])
             try:
-                with connect() as c:
+                c = connect()
+                try:
                     res = ROUTES[u.path](c, p)
-                self._send(200, json.dumps(res, ensure_ascii=False, default=str).encode("utf-8"), "application/json")
+                finally:
+                    release(c)
+                raw = json.dumps(res, ensure_ascii=False, default=str).encode("utf-8")
+                packed = gzip.compress(raw, compresslevel=5)
+                if "error" not in res:
+                    cache_put(key, raw, packed)
+                self._send(200, raw, "application/json", packed=packed)
             except Exception as e:  # surface the error to the UI rather than a blank page
                 self._send(500, json.dumps({"error": str(e)}).encode(), "application/json")
             return
@@ -490,8 +597,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(404, b"not found", "text/plain")
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         try:
-            with connect() as c:
+            c = connect()
+            try:
                 (data, ext), name = do_export(c, body)
+            finally:
+                release(c)
             ctype = "application/vnd.openxmlformats-officedocument.wordprocessingml.document" if ext == "docx" else "text/markdown"
             self._send(200, data, ctype, {"Content-Disposition": f'attachment; filename="{name}.{ext}"'})
         except Exception as e:
