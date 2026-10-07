@@ -418,8 +418,11 @@ def api_users_list(c, p, session):
 ROUTES = {"/api/meta": api_meta, "/api/search": api_search, "/api/case": api_case, "/api/statutes": api_statutes,
           "/api/provision": api_provision, "/api/briefs": api_briefs, "/api/brief": api_brief}
 ADMIN_ROUTES = {"/api/users": api_users_list}
-PUBLIC_PATHS = {"/login.html", "/api/login"}  # reachable with no session, only when HOSTED
-TYPES = {".html": "text/html; charset=utf-8", ".js": "application/javascript", ".css": "text/css"}
+PUBLIC_PATHS = {"/login.html", "/api/login",  # reachable with no session, only when HOSTED
+                "/manifest.webmanifest", "/sw.js", "/offline.html", "/icon-192.png", "/icon-512.png",
+                "/icon-maskable-512.png", "/apple-touch-icon.png", "/favicon.png", "/favicon.ico"}  # installable-app files
+TYPES = {".html": "text/html; charset=utf-8", ".js": "application/javascript", ".css": "text/css",
+         ".webmanifest": "application/manifest+json", ".png": "image/png", ".json": "application/json"}
 
 # Response cache for read-only API calls. The data only changes when lawbase.sqlite is replaced or patched,
 # so entries are keyed to the file's modification time and dropped wholesale when it changes.
@@ -552,7 +555,12 @@ class Handler(BaseHTTPRequestHandler):
         name = "index.html" if u.path in ("/", "") else os.path.basename(u.path)
         path = os.path.join(STATIC, name)
         if os.path.isfile(path):
-            self._send(200, open(path, "rb").read(), TYPES.get(os.path.splitext(name)[1], "application/octet-stream"))
+            ext = os.path.splitext(name)[1]
+            # the service worker and pages must always be re-checked so app updates reach installed phones;
+            # icons rarely change
+            cache = {"html": "no-cache", ".png": "public, max-age=604800"}.get("html" if ext in (".html", ".js", ".webmanifest") else ext)
+            self._send(200, open(path, "rb").read(), TYPES.get(ext, "application/octet-stream"),
+                       {"Cache-Control": cache} if cache else None)
         else:
             self._send(404, b"not found", "text/plain")
 
