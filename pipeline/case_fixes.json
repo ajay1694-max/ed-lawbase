@@ -1,0 +1,5 @@
+{
+  "_note": "Corrections to case metadata found when headnotes were checked against judgment text. Applied by apply_enrich.py (and should be applied by build.py on the next full rebuild). Each entry: case_id -> {column: corrected value, _why: reason}.",
+  "EDPORTAL_18_2026-06-30": {"citation": "Company Appeal (AT) (Ins) Nos. 1226-1227 of 2022", "_why": "ingest stored 2019 SCC OnLine SC 1542, which is Embassy Property's citation quoted inside the order"},
+  "UPHC011069462024": {"decision_date": "2025-02-24", "_why": "judgment text states it was pronounced on 24.02.2025"}
+}

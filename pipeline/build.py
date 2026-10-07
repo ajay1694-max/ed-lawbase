@@ -36,6 +36,7 @@ STATUTE_ACTS = {
     "IND_central_2114": "Companies Act 2013", "IND_central_2435": "Income-tax Act 1961",
     "IND_central_2475": "Customs Act 1962 (partial)", "IND_central_1618": "COFEPOSA 1974",
     "IND_central_1490": "SAFEMA 1976",
+    "IND_central_2154": "IBC 2016 (text before 2026 Amendment)", "IND_central_2006": "SARFAESI 2002",
 }
 
 ACT_FTS = {

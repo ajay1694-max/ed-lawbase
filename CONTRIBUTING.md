@@ -49,6 +49,10 @@ In the body, give the answer first, then the authorities table, then the open po
 
 Both carry `tier = "internal"`. See the internal pack README.
 
+## Applying enrichment to an existing database
+
+`python pipeline/apply_enrich.py data/lawbase.sqlite` reports what would change; add `--apply` to write (it backs the database up first). It loads new taxonomy issues and auto-tags them, statute addenda (`pipeline/statute_addenda.jsonl`), case metadata fixes (`pipeline/case_fixes.json`) and everything in `enrich/`. It is idempotent. Restart the app afterwards.
+
 ## Review
 
 - Every contribution is reviewed before merge: a legal-cell or nominated officer checks the holding against the certified copy.

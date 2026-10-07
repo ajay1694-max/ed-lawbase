@@ -122,3 +122,41 @@ fts = '"habeas corpus" OR "article 22 1"'
 [proc.discharge]
 label = "Discharge"
 fts = '"discharge application" OR "discharge petition" OR "discharged the accused" OR "section 227" OR "section 250"'
+
+# ---------------------------------------------------------------- IBC-PMLA interface (added 07.10.2026)
+# Drawn up for the IBC-PMLA case-law enrichment; see enrich/briefs/ibc-pmla-*.md.
+[ibc.interface]
+label = "IBC-PMLA interface (general)"
+fts = '("insolvency and bankruptcy" OR "resolution professional" OR cirp) AND ("money laundering" OR pmla)'
+
+[ibc.s14_moratorium]
+label = "Moratorium s.14 IBC vs PMLA attachment"
+fts = 'moratorium AND ("section 14" OR "14 1") AND (attach* OR "money laundering" OR pmla)'
+
+[ibc.s32a_immunity]
+label = "Section 32A IBC - immunity after resolution plan"
+fts = '"section 32a" OR "32a of the insolvency" OR "32a of the code" OR "32a of ibc"'
+
+[ibc.liquidation]
+label = "Liquidation and PMLA attachment"
+fts = '(liquidator OR "liquidation estate" OR "liquidation commencement") AND (attach* OR confiscat*) AND ("money laundering" OR pmla)'
+
+[ibc.jurisdiction]
+label = "NCLT/NCLAT jurisdiction vs PMLA forums - ss.60(5), 63, 231, 238 IBC"
+fts = '("section 60 5" OR "section 238" OR "section 231" OR "section 63") AND ("insolvency and bankruptcy" OR nclt OR nclat) AND ("money laundering" OR pmla)'
+
+[ibc.restitution]
+label = "Release / restoration / restitution of attached property - s.8(7), 8(8) PMLA"
+fts = '"section 8 8" OR "8 8 of the pmla" OR "section 8 7" OR (restitution AND ("money laundering" OR pmla))'
+
+[ibc.s12a_settlement]
+label = "Settlement / withdrawal s.12A IBC and source of funds"
+fts = '"section 12a" AND ("insolvency and bankruptcy" OR cirp OR "committee of creditors")'
+
+[ibc.fraudulent_cirp]
+label = "Fraudulent or collusive CIRP - ss.65, 66, 29A IBC"
+fts = '("section 65" OR "section 29a" OR "section 66") AND ("insolvency and bankruptcy" OR cirp) AND (fraudulent OR malicious OR collusive)'
+
+[ibc.personal_guarantor]
+label = "Personal guarantor insolvency (Part III IBC) and PMLA"
+fts = '"personal guarantor" AND ("insolvency and bankruptcy" OR "part iii")'

@@ -318,7 +318,7 @@ def api_provision(c, p):
 def api_briefs(c, p):
     out = []
     for s in schemas():
-        out += [dict(r) for r in c.execute(f"SELECT slug, title, tier, issues, date, author FROM {s}.briefs ORDER BY date DESC")]
+        out += [dict(r) for r in c.execute(f"SELECT slug, title, tier, issues, date, author FROM {s}.briefs ORDER BY date DESC, slug")]
     templates = []
     if INTERNAL_DBS:
         templates = [dict(r) for r in c.execute("SELECT slug, title, tier, issues FROM internal.templates ORDER BY title")]
