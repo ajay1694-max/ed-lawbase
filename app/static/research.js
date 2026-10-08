@@ -11,7 +11,8 @@ const action = (selector, fn) => { $(selector).onclick=async e=>{const b=e.curre
 function addBasket(id){if(!basket.includes(id)){if(basket.length>=20){alert('Export up to 20 judgments at once.');return;}basket.push(id);}saveBasket();}
 function caseLink(id, passage){const u=new URL(location.href);u.searchParams.set('case',id);if(passage!==undefined)u.searchParams.set('passage',passage);else u.searchParams.delete('passage');return u.href;}
 async function copyText(text){try{await navigator.clipboard.writeText(text);notice($('#bMsg'),'Copied');}catch(e){prompt('Copy this text:',text);}}
-function setTab(name){activeTab=name;document.body.classList.remove('reader-wide');document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));return tabs[name]();}
+let readerRequest=0;
+function setTab(name){readerRequest++;activeTab=name;document.body.classList.remove('reader-wide');document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));return tabs[name]();}
 function rememberURL(){const u=new URL(location.href);u.search='';for(const [k,v] of Object.entries(searchState))if(v)u.searchParams.set(k,v);history.replaceState({},'',u);}
 
 function judgmentsTab(){
@@ -41,9 +42,10 @@ function judgmentsTab(){
 };
 
 async function openCase(id, passage){
+  const request=++readerRequest;
   const target=$('#right');target.textContent='Loading…';
   try{
-    const d=await api('/api/case',{id});currentCase=d;const c=d.case;
+    const d=await api('/api/case',{id});if(request!==readerRequest)return;currentCase=d;const c=d.case;
     history.replaceState({},'',caseLink(id,passage));
     target.innerHTML=`<h2>${esc(c.title)}</h2><p class="hint">${esc(c.court)} · ${esc(c.decision_date)} · ${esc(c.citation)}<br>${esc(c.case_number)} ${c.judges?'· Recorded judge(s): '+esc(c.judges):''}<br>Acts: ${esc(c.acts||'Unrecorded')} · ${esc(c.disposition||'')}</p>
     <div class="bar">${safeURL(c.source_url)?`<a href="${safeURL(c.source_url)}" target="_blank" rel="noopener">Open ${esc(d.source_kind)}</a>`:'<span class="hint">Original PDF not linked</span>'}<button class="small" id="requestSource">Request a source / correction</button></div>
