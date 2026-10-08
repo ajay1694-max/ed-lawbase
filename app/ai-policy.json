@@ -1,0 +1,12 @@
+{
+  "provider": "openai",
+  "model": "gpt-6-luna",
+  "reasoning_effort": "none",
+  "monthly_budget_usd": 2.0,
+  "daily_queries_per_account": 20,
+  "max_output_tokens": 1200,
+  "max_context_characters": 24000,
+  "cache_hours": 24,
+  "automatic_model_upgrade": false,
+  "automatic_provider_fallback": false
+}

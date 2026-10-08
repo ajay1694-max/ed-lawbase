@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 APP = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(APP)
 sys.path.insert(0, APP)
-import auth, export, research  # noqa: E402
+import auth, export, research, assistant  # noqa: E402
 
 PUBLIC_DB = os.path.join(ROOT, "data", "lawbase.sqlite")
 INTERNAL_DBS = sorted(glob.glob(os.path.join(ROOT, "internal", "*.sqlite")))
@@ -576,6 +576,8 @@ class Handler(BaseHTTPRequestHandler):
         session = self._require_session(u.path)
         if session is None:
             return
+        if u.path == "/api/assistant/status":
+            return self._send(200, json.dumps(assistant.status(ROOT)).encode(), "application/json")
         if u.path == "/api/whoami":
             return self._send(200, json.dumps({"hosted": HOSTED, **session}).encode(), "application/json")
         if u.path in ("/api/library", "/api/submissions", "/api/submission-file"):
@@ -679,6 +681,23 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/logout":
             return self._send(200, b"{}", "application/json", {"Set-Cookie": f"{COOKIE_NAME}=; Path=/; Max-Age=0"})
+        if u.path == "/api/assistant/ask":
+            try:
+                question = assistant.validate_question(body)
+                with _WORK_SLOTS:
+                    c = connect()
+                    try:
+                        sources = assistant.retrieval(c, question)
+                    finally:
+                        release(c)
+                # A slow provider call holds neither search slots nor a DB connection.
+                res = assistant.ask(ROOT, session['username'], question, sources,
+                                    os.stat(PUBLIC_DB).st_mtime_ns)
+                return self._send(200, json.dumps(res, ensure_ascii=False).encode(), "application/json")
+            except ValueError as e:
+                return self._send(400, json.dumps({'error': str(e)}).encode(), "application/json")
+            except (sqlite3.Error, OSError):
+                return self._send(503, b'{"error":"Research assistant temporarily unavailable"}', "application/json")
         if u.path in ("/api/library/save", "/api/searches/save", "/api/submissions/create", "/api/submissions/review"):
             c = connect()
             try:

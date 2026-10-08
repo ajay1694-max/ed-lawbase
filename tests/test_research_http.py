@@ -37,6 +37,16 @@ class HostedHTTPTests(unittest.TestCase):
                     return code, json.loads(data), cache
                 try:
                     self.assertEqual(request('/api/submissions')[0], 401)
+                    self.assertEqual(request('/api/assistant/status')[0], 401)
+                    self.assertEqual(request('/api/assistant/ask', {'question': 'General public legal question'})[0], 401)
+                    code, policy, cache = request('/api/assistant/status', token=alice)
+                    self.assertEqual(code, 200)
+                    self.assertEqual(policy['model'], 'gpt-6-luna')
+                    self.assertEqual(policy['monthly_budget_usd'], 2.0)
+                    self.assertEqual(cache, 'no-store')
+                    self.assertNotIn('OPENAI_API_KEY', policy)
+                    self.assertEqual(request('/api/assistant/ask', {'question': 'General public legal question'}, alice)[0], 400)
+                    self.assertEqual(request('/api/assistant/ask', {'question': 'General public legal question', 'public_question': True}, alice, {'Origin': 'https://other.invalid'})[0], 403)
                     form = {'title': 'Public test request', 'citation': 'TEST 1', 'contributor': 'Alice', 'public_judgment': True}
                     self.assertEqual(request('/api/submissions/create', form, alice, {'Origin': 'https://other.invalid'})[0], 403)
                     code, created, cache = request('/api/submissions/create', form, alice)
