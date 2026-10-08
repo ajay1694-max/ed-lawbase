@@ -27,10 +27,10 @@ Give a short, qualified answer. Distinguish holdings from submissions, quoted pr
 and research headnotes. Identify mixed or contrary outcomes, factual limits and gaps.
 Never invent citations, paragraph numbers, quotations, later treatment or legal rules.
 Every substantive point must have at least one supplied source ID. Include an exact
-supporting quotation copied from one cited extract. If extracts are insufficient,
+supporting quotation copied from one cited extract.
 Do not join noncontiguous text, insert ellipses, correct OCR, or change punctuation
 or hyphenation in quotations. Copy one short continuous sentence or phrase.
-omit unsupported points and explain the gap in limitations. Questions should ask
+If extracts are insufficient, omit unsupported points and explain the gap in limitations. Questions should ask
 about general legal facts only, without requesting identifying case details.
 This is research guidance, not a decision to arrest, freeze property or file a case.
 Return the required JSON. Limit to four points, two follow-up questions and a short
@@ -217,7 +217,7 @@ def checked(answer, sources):
     if not isinstance(answer, dict):
         raise ValueError('AI answer failed the format check.')
     lookup = {s['id']: s for s in sources}
-    normalize = lambda s: ' '.join(s.split())
+    normalize = lambda s: re.sub(r'(?<=-)\s+', '', ' '.join(s.split()))
     points = answer.get('points', [])
     if not isinstance(points, list) or len(points) > 4:
         raise ValueError('AI answer failed the source check.')
@@ -228,8 +228,22 @@ def checked(answer, sources):
         quote = point.get('quote', '')
         if not isinstance(refs, list) or not refs or any(not isinstance(ref, str) or ref not in lookup for ref in refs) or not isinstance(quote, str) or not 20 <= len(quote) <= 800:
             raise ValueError('AI answer failed the source check.')
-        if not any(normalize(quote) in normalize(p['text']) for ref in refs for p in lookup[ref]['extracts']):
+        # PDF line wraps often leave 'non- cooperation'. Accept only whitespace
+        # differences at that hyphen, then display the actual retrieved wording.
+        found = None
+        pattern = r'\s*'.join(re.escape(ch) for ch in re.sub(r'\s+', '', quote))
+        for ref in refs:
+            for passage in lookup[ref]['extracts']:
+                if normalize(quote) in normalize(passage['text']):
+                    match = re.search(pattern, passage['text'])
+                    if match:
+                        found = ' '.join(match.group().split())
+                        break
+            if found:
+                break
+        if not found:
             raise ValueError('AI quotation did not match the retrieved judgment.')
+        point['quote'] = found
         if not isinstance(point.get('text'), str) or len(point['text']) > 1800:
             raise ValueError('AI answer was too long.')
     if not isinstance(answer.get('limitations'), str) or not isinstance(answer.get('questions'), list):

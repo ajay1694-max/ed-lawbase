@@ -38,6 +38,14 @@ class AssistantTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             assistant.checked([], SOURCES)
 
+    def test_pdf_hyphen_wrap_preserves_source_wording(self):
+        sources = [{'id': 'S1', 'extracts': [{'text': 'Mere non-\n cooperation is not the sole reason for arrest.'}]}]
+        answer = {'points': [{'text': 'Qualified finding.', 'sources': ['S1'], 'quote': 'Mere non-cooperation is not the sole reason for arrest.'}], 'limitations': '', 'questions': []}
+        result = assistant.checked(answer, sources)
+        self.assertEqual(result['points'][0]['quote'], 'Mere non- cooperation is not the sole reason for arrest.')
+        answer['points'][0]['quote'] = 'Mere non-cooperation is the sole reason for arrest.'
+        with self.assertRaises(ValueError): assistant.checked(answer, sources)
+
     def test_budget_is_atomic_and_cached_answers_are_free(self):
         with tempfile.TemporaryDirectory() as root:
             assistant.status(root)  # initialize the fixture ledger before racing
