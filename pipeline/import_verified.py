@@ -9,6 +9,10 @@ import datetime
 import json
 from pathlib import Path
 import sqlite3
+try:
+    from .public_text import strip_admin_lines
+except ImportError:
+    from public_text import strip_admin_lines
 
 
 def apply_bundle(con, bundle):
@@ -24,7 +28,7 @@ def apply_bundle(con, bundle):
             if row is None:
                 raise ValueError(f"Required existing case missing: {cid}")
             for col, fix in item["fixes"].items():
-                if col not in ("case_number", "citation", "judges"):
+                if col not in ("case_number", "citation", "judges", "decision_date", "year", "disposition"):
                     raise ValueError("Unapproved metadata column")
                 value = con.execute(f"SELECT {col} FROM cases WHERE case_id=?", (cid,)).fetchone()[0]
                 if value == fix["new"]:
@@ -42,6 +46,8 @@ def apply_bundle(con, bundle):
                 columns = ("court_slug", "court", "title", "case_number", "citation", "decision_date", "year", "disposition", "judges")
                 con.execute("INSERT INTO cases VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", (cid, *(meta[k] for k in columns), source["url"], len(item["chunks"]), meta["acts"]))
                 for index, chunk in enumerate(item["chunks"]):
+                    if strip_admin_lines(chunk) != chunk:
+                        raise ValueError("Administrative stamp in public intake")
                     cur = con.execute("INSERT INTO chunks(case_id,chunk_index,section_type,text) VALUES (?,?,?,?)", (cid, index, "judgment", chunk))
                     con.execute("INSERT INTO chunks_fts(rowid,text) VALUES (?,?)", (cur.lastrowid, chunk))
                     con.execute("INSERT INTO chunk_case VALUES (?,?)", (cur.lastrowid, cid))
@@ -53,14 +59,14 @@ def apply_bundle(con, bundle):
                     raise ValueError(f"ID already exists without matching source: {cid}")
         else:
             raise ValueError("Invalid intake mode")
-        note = item["note"]
+        note = item.get("note")
         old_note = con.execute("SELECT 1 FROM enrich_cases WHERE case_id=?", (cid,)).fetchone()
-        if not old_note:
+        if note and not old_note:
             con.execute("INSERT INTO enrich_cases VALUES (?,?,?,?,?,?,?,?,?)", (cid, "public", note["stance"], "later history not verified", "", ",".join(note["issues"]), note["summary"], note["body"], bundle["verified_on"]))
             changed["notes_added"] += 1
-        else:
+        elif old_note:
             print(f"Preserved existing headnote: {cid}")
-        for issue in note["issues"]:
+        for issue in note["issues"] if note else []:
             if not con.execute("SELECT 1 FROM issues WHERE issue=?", (issue,)).fetchone():
                 raise ValueError(f"Unknown issue: {issue}")
             con.execute("INSERT OR IGNORE INTO case_issues VALUES (?,?,999,'curated')", (cid, issue))

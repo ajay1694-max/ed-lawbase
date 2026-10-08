@@ -2,7 +2,10 @@
   "_note": "Corrections to case metadata found when headnotes were checked against judgment text. Applied by apply_enrich.py (and should be applied by build.py on the next full rebuild). Each entry: case_id -> {column: corrected value, _why: reason}.",
   "EDPORTAL_18_2026-06-30": {
     "citation": "Company Appeal (AT) (Ins) Nos. 1226-1227 of 2022",
-    "_why": "ingest stored 2019 SCC OnLine SC 1542, which is Embassy Property's citation quoted inside the order"
+    "_why": "Own first-page metadata and disposal checked against the official original on 08.10.2026; cited authorities and reserved dates are not own-case metadata. Case IDs retained for existing links.",
+    "case_number": "Company Appeal (AT) (Ins) Nos.1226-1227 of 2022",
+    "judges": "N. Seshasayee (Judicial); Arun Baroka (Technical); Indevar Pandey (Technical)",
+    "disposition": "Dismissed"
   },
   "UPHC011069462024": {
     "decision_date": "2025-02-24",
@@ -12,5 +15,28 @@
     "case_number": "BAIL APPLN. 4461/2025 & CRL.M.(BAIL) 490/2026",
     "citation": "2026:DHC:6498",
     "_why": "Own first-page case number and neutral citation visually verified against original PDF; earlier fields were cited authorities."
+  },
+  "EDPORTAL_11_2026-07-04": {
+    "case_number": "CRL.M.A.17144/2025,17145/2025 & 17146/2025 in CRL.REV.P.1283/2024",
+    "citation": "",
+    "judges": "Jasmeet Singh",
+    "_why": "Own first-page metadata and disposal checked against the official original on 08.10.2026; cited authorities and reserved dates are not own-case metadata. Case IDs retained for existing links."
+  },
+  "EDPORTAL_20_2026-05-26": {
+    "citation": "2026:KER:35985",
+    "judges": "T.R. Ravi",
+    "_why": "Own first-page metadata and disposal checked against the official original on 08.10.2026; cited authorities and reserved dates are not own-case metadata. Case IDs retained for existing links."
+  },
+  "EDPORTAL_34_2025-10-07": {
+    "case_number": "Criminal Appeal Nos.4183-4184 of 2025",
+    "judges": "Dipankar Datta; Augustine George Masih",
+    "_why": "Own first-page metadata and disposal checked against the official original on 08.10.2026; cited authorities and reserved dates are not own-case metadata. Case IDs retained for existing links."
+  },
+  "EDPORTAL_35_2025-09-24": {
+    "case_number": "CRMP No.2506 of 2025",
+    "citation": "2025:CGHC:52079",
+    "judges": "Arvind Kumar Verma",
+    "decision_date": "2025-10-17",
+    "_why": "Own first-page metadata and disposal checked against the official original on 08.10.2026; cited authorities and reserved dates are not own-case metadata. Case IDs retained for existing links."
   }
 }

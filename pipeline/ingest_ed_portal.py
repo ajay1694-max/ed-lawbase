@@ -19,6 +19,10 @@ import fitz  # PyMuPDF
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
+try:
+    from .public_text import strip_admin_lines
+except ImportError:
+    from public_text import strip_admin_lines
 
 ROOT = r"C:\Users\Admin\Documents\PMLA_Judgments_and_Compendiums\01_ED_Official_Portal_Judgments"
 INDEX_MD = os.path.join(ROOT, "INDEX_OF_ED_JUDGMENTS.md")
@@ -91,6 +95,7 @@ def parse_index():
 def clean_text(t):
     t = BANNER_BLOCK.sub("\n", t)
     t = BANNER_LINE.sub("", t)
+    t = strip_admin_lines(t)
     t = re.sub(r"(?m)^--- page \d+ ---\s*$", "", t)  # ocrfast.py page markers
     return re.sub(r"\n{3,}", "\n\n", t).strip()
 
