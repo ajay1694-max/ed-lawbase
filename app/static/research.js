@@ -30,6 +30,7 @@ function judgmentsTab(){
     try{
       const d=await api('/api/search',searchState);if(!target.isConnected)return;
       target.innerHTML=`<p class="hint">${d.total.toLocaleString()} matching judgments · ${d.results.length?d.offset+1:0}–${d.offset+d.results.length} · ${((performance.now()-started)/1000).toFixed(1)}s</p>`+d.results.map(r=>`<article class="res"><button class="small open" data-id="${esc(r.case_id)}"><strong>${esc(r.title)}</strong></button><div class="m">${esc(r.court)} · ${esc(r.decision_date)} · ${esc(r.citation)} ${r.hits?'· '+r.hits+' matching passages':''}</div>${r.curated.map(h=>`<div class="snip">${esc(h.summary)}</div>`).join('')}${r.snips.map(s=>`<div class="snip">…${snip(s)}…</div>`).join('')}<div>${r.issues.map(i=>`<span class="chip">${esc(i.label||i.issue)}</span>`).join('')}</div><button class="small add" data-id="${esc(r.case_id)}">＋ export list</button></article>`).join('')+`<div class="bar" style="margin-top:12px"><button class="small" id="prev" ${d.offset===0?'disabled':''}>Previous</button><button class="small" id="next" ${!d.has_more?'disabled':''}>Next</button></div>`;
+      target.parentElement.scrollTop=0;
       target.querySelectorAll('.open').forEach(b=>b.onclick=()=>openCase(b.dataset.id));target.querySelectorAll('.add').forEach(b=>b.onclick=()=>addBasket(b.dataset.id));
       $('#prev').onclick=()=>run(Math.max(0,d.offset-d.limit));$('#next').onclick=()=>run(d.offset+d.limit);
     }catch(e){if(target.isConnected)notice(target,e.message,true);}finally{go.disabled=false;}
@@ -44,7 +45,7 @@ async function openCase(id, passage){
   try{
     const d=await api('/api/case',{id});currentCase=d;const c=d.case;
     history.replaceState({},'',caseLink(id,passage));
-    target.innerHTML=`<h2>${esc(c.title)}</h2><p class="hint">${esc(c.court)} · ${esc(c.decision_date)} · ${esc(c.citation)}<br>${esc(c.case_number)} ${c.judges?'· Coram: '+esc(c.judges):''}<br>Acts: ${esc(c.acts||'Unrecorded')} · ${esc(c.disposition||'')}</p>
+    target.innerHTML=`<h2>${esc(c.title)}</h2><p class="hint">${esc(c.court)} · ${esc(c.decision_date)} · ${esc(c.citation)}<br>${esc(c.case_number)} ${c.judges?'· Recorded judge(s): '+esc(c.judges):''}<br>Acts: ${esc(c.acts||'Unrecorded')} · ${esc(c.disposition||'')}</p>
     <div class="bar">${safeURL(c.source_url)?`<a href="${safeURL(c.source_url)}" target="_blank" rel="noopener">Open ${esc(d.source_kind)}</a>`:'<span class="hint">Original PDF not linked</span>'}<button class="small" id="requestSource">Request a source / correction</button></div>
     <div class="tools"><div class="bar"><button class="small" id="xCase">Download DOCX</button><button class="small" id="xAdd">＋ export list</button><button class="small" id="copyCitation">Copy citation</button><button class="small" id="copyLink">Copy link</button><button class="small" id="wide">Expand reader</button><button class="small" id="fontDown" aria-label="Smaller text">A−</button><button class="small" id="fontUp" aria-label="Larger text">A＋</button></div>
     <div class="bar"><input type="search" id="findText" aria-label="Find in judgment" placeholder="Find in this judgment"><button class="small" id="findPrev">Previous match</button><button class="small" id="findNext">Next match</button><span class="hint" id="findCount"></span></div></div>
