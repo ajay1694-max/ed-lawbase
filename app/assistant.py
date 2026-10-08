@@ -28,6 +28,8 @@ and research headnotes. Identify mixed or contrary outcomes, factual limits and 
 Never invent citations, paragraph numbers, quotations, later treatment or legal rules.
 Every substantive point must have at least one supplied source ID. Include an exact
 supporting quotation copied from one cited extract. If extracts are insufficient,
+Do not join noncontiguous text, insert ellipses, correct OCR, or change punctuation
+or hyphenation in quotations. Copy one short continuous sentence or phrase.
 omit unsupported points and explain the gap in limitations. Questions should ask
 about general legal facts only, without requesting identifying case details.
 This is research guidance, not a decision to arrest, freeze property or file a case.
@@ -197,7 +199,14 @@ def provider(api_key, prompt):
             raise ValueError('AI response was incomplete. Try a narrower legal question.')
         text = ''.join(p['text'] for o in result.get('output', []) if o.get('type') == 'message'
                        for p in o.get('content', []) if p.get('type') == 'output_text')
-        return json.loads(text)
+        answer = json.loads(text)
+        if isinstance(answer, dict):
+            usage = result.get('usage', {})
+            inp, out = usage.get('input_tokens'), usage.get('output_tokens')
+            if isinstance(inp, int) and isinstance(out, int) and inp >= 0 and out >= 0:
+                answer['usage'] = {'input_tokens': inp, 'output_tokens': out,
+                                   'estimated_usd': (inp * 0.10 + out * 0.50) / 1_000_000}
+        return answer
     except (urllib.error.URLError, TimeoutError, OSError):
         raise ValueError('AI service unavailable. No automatic retry or model upgrade was made.') from None
     except (KeyError, TypeError, json.JSONDecodeError):
