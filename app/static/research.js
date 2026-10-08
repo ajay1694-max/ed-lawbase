@@ -8,7 +8,14 @@ const post = async (path, body) => {
 const safeURL = url => /^https?:\/\//i.test(url||'') ? esc(url) : '';
 const notice = (el, message, bad=false) => { el.textContent=message; el.classList.toggle('error',bad); };
 const action = (selector, fn) => { $(selector).onclick=async e=>{const b=e.currentTarget;b.disabled=true;try{await fn(e);}catch(err){alert(err.message);}finally{b.disabled=false;}}; };
-function addBasket(id){if(!basket.includes(id)){if(basket.length>=20){alert('Export up to 20 judgments at once.');return;}basket.push(id);}saveBasket();}
+function addBasket(id,title){if(!basket.includes(id)){if(basket.length>=20){alert('Export up to 20 judgments at once.');return;}basket.push(id);}if(title)basketTitles[id]=title;saveBasket();}
+// Cause title from "<case no.> of <petitioner> Vs <respondent>"; null when the title has no "versus".
+function parties(title){const m=String(title||'').match(/^(?:(.*?)\s+of\s+)?(.+?)\s+(?:vs\.?|versus|v\.)\s+(.+)$/i);return m?{no:(m[1]||'').replace(/^\//,'').trim(),pet:m[2].trim(),res:m[3].replace(/[,\s]+$/,'').trim()}:null;}
+// The judges field is often stray extracted text ("him, by an", "Court No. 17"); show it only when it reads like names.
+function cleanJudges(j){j=String(j||'').trim();if(!j||j.length>220)return '';const parts=j.split(/[;,]/).map(s=>s.trim()).filter(Boolean);
+  const bad=/\b(by|is|an|as|which|therefore|petitioner|accused|court|room|district|act|risk|wife|directors?|investigating|release|scc)\b/i;
+  return parts.length&&parts.every(p=>/^[A-Z][A-Za-z .()'’-]{1,70}$/.test(p)&&!bad.test(p))&&/\.|justice/i.test(j)?j:'';}
+const fact=(k,v)=>v?`<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`:'';
 function caseLink(id, passage){const u=new URL(location.href);u.searchParams.set('case',id);if(passage!==undefined)u.searchParams.set('passage',passage);else u.searchParams.delete('passage');return u.href;}
 async function copyText(text){try{await navigator.clipboard.writeText(text);notice($('#bMsg'),'Copied');}catch(e){prompt('Copy this text:',text);}}
 let readerRequest=0;
@@ -22,17 +29,27 @@ function judgmentsTab(){
   <select id="issue" aria-label="Issue"><option value="">Any issue</option>${META.issues.map(i=>`<option value="${esc(i.issue)}">${esc(i.label)} (${i.n})</option>`).join('')}</select>
   <input id="year_from" type="number" aria-label="From year" placeholder="From year" style="width:110px"><input id="year_to" type="number" aria-label="To year" placeholder="To year" style="width:110px"></div>
   <div class="bar"><label><input type="checkbox" id="same"> Same passage only</label><select id="sort" aria-label="Sort order"><option value="relevance">Relevance</option><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select><select id="limit" aria-label="Results per page"><option value="25">25 per page</option><option value="50">50 per page</option></select><button class="small" id="saveSearch">Save search</button></div>
+  <div id="activeFilters" class="activefilters" aria-label="Active filters"></div>
   <p class="hint">All words must appear in the judgment. Use quotation marks for phrases, or OR for alternatives.</p><div id="results" aria-live="polite"></div>`;
   for(const k of ['q','court','act','issue','year_from','year_to','sort','limit'])if(searchState[k])$('#'+k).value=searchState[k];
   $('#same').checked=searchState.within==='chunk';
   const values=()=>Object.fromEntries(['q','court','act','issue','year_from','year_to','sort','limit'].map(k=>[k,$('#'+k).value]).concat([['within',$('#same').checked?'chunk':'case']]));
+  const drawActive=()=>{const v=values(),items=[];
+    if(v.court)items.push(['court',(META.courts.find(c=>c.court_slug===v.court)||{}).court||v.court]);if(v.act)items.push(['act',v.act]);
+    if(v.issue)items.push(['issue',(META.issues.find(i=>i.issue===v.issue)||{}).label||v.issue]);if(v.year_from)items.push(['year_from','From '+v.year_from]);
+    if(v.year_to)items.push(['year_to','To '+v.year_to]);if(v.within==='chunk')items.push(['same','Same passage only']);if(v.sort!=='relevance')items.push(['sort',v.sort==='newest'?'Newest first':'Oldest first']);
+    $('#activeFilters').innerHTML=items.map(([k,l])=>`<button class="ftag" data-k="${k}" title="Remove this filter">${esc(l)}<span aria-hidden="true">×</span></button>`).join('')+(items.length>1?'<button class="ftag clear" data-k="*">Clear all filters</button>':'');
+    $('#activeFilters').querySelectorAll('.ftag').forEach(b=>b.onclick=()=>{for(const f of b.dataset.k==='*'?['court','act','issue','year_from','year_to','same','sort']:[b.dataset.k]){if(f==='same')$('#same').checked=false;else if(f==='sort')$('#sort').value='relevance';else $('#'+f).value='';}
+      drawActive();const w=values();if(w.q||w.court||w.issue||w.act)run();else{$('#results').innerHTML='';searchState={};rememberURL();}});};
+  for(const k of ['court','act','issue','year_from','year_to','sort','same'])$('#'+k).addEventListener('change',drawActive);
+  drawActive();
   const run=async(offset=0)=>{
-    searchState={...values(),offset};rememberURL();const target=$('#results'),go=$('#go');go.disabled=true;target.textContent='Searching…';const started=performance.now();
+    searchState={...values(),offset};rememberURL();drawActive();const target=$('#results'),go=$('#go');go.disabled=true;target.textContent='Searching…';const started=performance.now();
     try{
       const d=await api('/api/search',searchState);if(!target.isConnected)return;
-      target.innerHTML=`<p class="hint">${d.total.toLocaleString()} matching judgments · ${d.results.length?d.offset+1:0}–${d.offset+d.results.length} · ${((performance.now()-started)/1000).toFixed(1)}s</p>`+d.results.map(r=>`<article class="res"><button class="small open" data-id="${esc(r.case_id)}"><strong>${esc(r.title)}</strong></button><div class="m">${esc(r.court)} · ${esc(r.decision_date)} · ${esc(r.citation)} ${r.hits?'· '+r.hits+' matching passages':''}</div>${r.curated.map(h=>`<div class="snip">${esc(h.summary)}</div>`).join('')}${r.snips.map(s=>`<div class="snip">…${snip(s)}…</div>`).join('')}<div>${r.issues.map(i=>`<span class="chip">${esc(i.label||i.issue)}</span>`).join('')}</div><button class="small add" data-id="${esc(r.case_id)}">＋ export list</button></article>`).join('')+`<div class="bar" style="margin-top:12px"><button class="small" id="prev" ${d.offset===0?'disabled':''}>Previous</button><button class="small" id="next" ${!d.has_more?'disabled':''}>Next</button></div>`;
+      target.innerHTML=`<p class="hint">${d.total.toLocaleString()} matching judgments · ${d.results.length?d.offset+1:0}–${d.offset+d.results.length} · ${((performance.now()-started)/1000).toFixed(1)}s</p>`+d.results.map(r=>`<article class="res"><button class="small open" data-id="${esc(r.case_id)}"><strong>${esc(r.title)}</strong></button><div class="m">${esc(r.court)} · ${esc(r.decision_date)} · ${esc(r.citation)} ${r.hits?'· '+r.hits+' matching passages':''}</div>${r.curated.map(h=>`<div class="snip">${esc(h.summary)}</div>`).join('')}${r.snips.map(s=>`<div class="snip">…${snip(s)}…</div>`).join('')}<div>${r.issues.map(i=>`<span class="chip">${esc(i.label||i.issue)}</span>`).join('')}</div><button class="small add" data-id="${esc(r.case_id)}" data-title="${esc(r.title)}">＋ export list</button></article>`).join('')+`<div class="bar" style="margin-top:12px"><button class="small" id="prev" ${d.offset===0?'disabled':''}>Previous</button><button class="small" id="next" ${!d.has_more?'disabled':''}>Next</button></div>`;
       target.parentElement.scrollTop=0;
-      target.querySelectorAll('.open').forEach(b=>b.onclick=()=>openCase(b.dataset.id));target.querySelectorAll('.add').forEach(b=>b.onclick=()=>addBasket(b.dataset.id));
+      target.querySelectorAll('.open').forEach(b=>b.onclick=()=>openCase(b.dataset.id));target.querySelectorAll('.add').forEach(b=>b.onclick=()=>addBasket(b.dataset.id,b.dataset.title));
       $('#prev').onclick=()=>run(Math.max(0,d.offset-d.limit));$('#next').onclick=()=>run(d.offset+d.limit);
     }catch(e){if(target.isConnected)notice(target,e.message,true);}finally{go.disabled=false;}
   };
@@ -47,7 +64,10 @@ async function openCase(id, passage){
   try{
     const d=await api('/api/case',{id});if(request!==readerRequest)return;currentCase=d;const c=d.case;
     history.replaceState({},'',caseLink(id,passage));
-    target.innerHTML=`<h2>${esc(c.title)}</h2><p class="hint">${esc(c.court)} · ${esc(c.decision_date)} · ${esc(c.citation)}<br>${esc(c.case_number)} ${c.judges?'· Recorded judge(s): '+esc(c.judges):''}<br>Acts: ${esc(c.acts||'Unrecorded')} · ${esc(c.disposition||'')}</p>
+    const pt=parties(c.title),caseNo=(pt&&pt.no)||c.case_number;
+    target.innerHTML=`<div class="causetitle"><div class="ct-court">${esc(c.court)}</div>${caseNo?`<div class="ct-no">${esc(caseNo)}</div>`:''}
+    <h2>${pt?`<span class="ct-party">${esc(pt.pet)}</span><span class="ct-v">versus</span><span class="ct-party">${esc(pt.res)}</span>`:esc(c.title)}</h2>
+    <dl class="ct-facts">${fact('Decided',c.decision_date)}${fact('Citation',c.citation)}${c.case_number&&c.case_number!==caseNo?fact('Case no.',c.case_number):''}${fact('Judge(s) as recorded',cleanJudges(c.judges))}${fact('Acts',c.acts||'Unrecorded')}${fact('Result',c.disposition)}</dl></div>
     <div class="bar">${safeURL(c.source_url)?`<a href="${safeURL(c.source_url)}" target="_blank" rel="noopener">Open ${esc(d.source_kind)}</a>`:'<span class="hint">Original PDF not linked</span>'}<button class="small" id="requestSource">Request a source / correction</button></div>
     <div class="tools"><div class="bar"><button class="small" id="xCase">Download DOCX</button><button class="small" id="xAdd">＋ export list</button><button class="small" id="copyCitation">Copy citation</button><button class="small" id="copyLink">Copy link</button><button class="small" id="wide">Expand reader</button><button class="small" id="fontDown" aria-label="Smaller text">A−</button><button class="small" id="fontUp" aria-label="Larger text">A＋</button></div>
     <div class="bar"><input type="search" id="findText" aria-label="Find in judgment" placeholder="Find in this judgment"><button class="small" id="findPrev">Previous match</button><button class="small" id="findNext">Next match</button><span class="hint" id="findCount"></span></div></div>
@@ -55,7 +75,7 @@ async function openCase(id, passage){
     ${d.curated.map(h=>`<div class="headnote"><strong>Research headnote</strong> · ${esc(h.tier)} · ${esc(h.status)}<p>${esc(h.summary)}</p>${md(h.body||'')}</div>`).join('')}
     <p class="hint">Passage numbers below locate extracted text in LawBase; they are not the court’s paragraph numbers. Check the original before citation.</p>
     <div class="txt" id="judgmentText">${d.chunks.map(ch=>`<section class="passage" id="passage-${Number(ch.chunk_index)}"><button class="small passageCopy" data-index="${Number(ch.chunk_index)}">Copy passage ${Number(ch.chunk_index)+1} with citation</button><p data-index="${Number(ch.chunk_index)}">${esc(ch.text.replace(/\[(SECTION|TITLE)\]\s*#*\s*/g,''))}</p></section>`).join('')}</div>`;
-    $('#xCase').onclick=()=>download({kind:'case',id});$('#xAdd').onclick=()=>addBasket(id);
+    $('#xCase').onclick=()=>download({kind:'case',id});$('#xAdd').onclick=()=>addBasket(id,c.title);
     const cite=[c.title,c.citation,c.court,c.decision_date].filter(Boolean).join(' · ');
     $('#copyCitation').onclick=()=>copyText(cite);$('#copyLink').onclick=()=>copyText(caseLink(id));
     $('#requestSource').onclick=()=>{setTab('contribute');$('#submitTitle').value=c.title;$('#submitCitation').value=c.citation||c.case_number||id;};
@@ -108,7 +128,7 @@ briefsTab=async function(){await oldBriefsTab();const tools=document.createEleme
 
 const tabs={judgments:judgmentsTab,statutes:statutesTab,briefs:briefsTab,library:libraryTab,contribute:contributeTab,review:()=>loadQueue(true)};
 (async()=>{
-  try{WHO=await api('/api/whoami');META=await api('/api/meta');try{basket=JSON.parse(localStorageGet('lb-basket:'+WHO.username)||'[]');if(!Array.isArray(basket))basket=[];}catch(e){basket=[];}saveBasket();
+  try{WHO=await api('/api/whoami');META=await api('/api/meta');try{basket=JSON.parse(localStorageGet('lb-basket:'+WHO.username)||'[]');if(!Array.isArray(basket))basket=[];}catch(e){basket=[];}try{basketTitles=JSON.parse(localStorageGet('lb-basket-titles:'+WHO.username)||'{}')||{};}catch(e){basketTitles={};}saveBasket();
     $('#reviewNav').hidden=!WHO.is_admin;if(WHO.hosted){$('#hostedLinks').style.display='inline';if(WHO.is_admin)$('#adminLink').style.display='inline';$('#signOut').onclick=async e=>{e.preventDefault();await post('/api/logout',{});location.href='/login.html';};}
     const m=META.meta;$('#snap').textContent=`${Number(m.cases).toLocaleString()} judgments · ${Number(m.provisions).toLocaleString()} provisions · ${m.briefs} briefs · latest decision ${m.latest_decision||'unrecorded'}`;$('#intBadge').hidden=!META.internal;$('#attr').textContent='Check the original and later history before relying on extracted text. '+(m.attribution||'');
     document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));$('#bClear').onclick=()=>{basket=[];saveBasket();};$('#bExport').onclick=()=>basket.length?download({kind:'table',ids:basket}):notice($('#bMsg'),'Add cases first');$('#bBundle').onclick=()=>basket.length?download({kind:'bundle',ids:basket}):notice($('#bMsg'),'Add cases first');

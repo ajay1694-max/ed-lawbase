@@ -7,11 +7,21 @@ const api = async (path, params={}) => {
   if(r.status===401){location.href='/login.html';throw Error('Please sign in');}
   const data=await r.json(); if(!r.ok || data.error) throw Error(data.error||'Request failed'); return data;
 };
-let META = null, basket = [];
+let META = null, basket = [], basketTitles = {};
+// "CRL OP/5/2024 of T.UDAYAKUMAR Vs DIRECTORATE ..." -> "T.UDAYAKUMAR", for the export-list tags
+const shortCase = t => { const m = String(t).match(/^(?:.*?\s+of\s+)?(.+?)\s+(?:vs\.?|versus|v\.)\s+/i); const s = (m ? m[1] : String(t)).trim(); return s.length > 32 ? s.slice(0, 30) + "…" : s; };
 
 function localStorageGet(k){ try { return localStorage.getItem(k); } catch(e){ return null; } }
 function localStorageSet(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
-function saveBasket(){ localStorageSet("lb-basket:" + WHO.username, JSON.stringify(basket)); $("#bCount").textContent = basket.length; }
+function saveBasket(){
+  for (const k of Object.keys(basketTitles)) if (!basket.includes(k)) delete basketTitles[k];
+  localStorageSet("lb-basket:" + WHO.username, JSON.stringify(basket));
+  localStorageSet("lb-basket-titles:" + WHO.username, JSON.stringify(basketTitles));
+  $("#bCount").textContent = basket.length;
+  const names = $("#bNames"); if (!names) return;
+  names.innerHTML = basket.map(id => `<span class="btag" title="${esc(basketTitles[id] || id)}">${esc(shortCase(basketTitles[id] || id))}<button aria-label="Remove from export list" data-id="${esc(id)}">×</button></span>`).join("");
+  names.querySelectorAll("button").forEach(b => b.onclick = () => { basket = basket.filter(x => x !== b.dataset.id); saveBasket(); });
+}
 
 async function download(body){
   $("#bMsg").textContent = "preparing…";
