@@ -148,3 +148,36 @@ def brief(meta, body, attribution):
     _markdown(d, body)
     _footer(d, attribution)
     return _save(d), "docx"
+
+
+def bundle(cases, attribution):
+    """An indexed compilation of corpus text; original PDFs remain separately linked."""
+    if not HAVE_DOCX:
+        parts = ['# Authority bundle', CAUTION]
+        for i, item in enumerate(cases, 1):
+            c = item['case']
+            parts.extend([f"## {i}. {c['title']}", c.get('citation') or '', c.get('source_url') or '',
+                          *[ch['text'] for ch in item['chunks']]])
+        return '\n\n'.join(parts + [attribution]).encode('utf-8'), 'md'
+    d = _new()
+    d.add_heading('Authority bundle', level=1)
+    d.add_paragraph('Extracted judgments from ED LawBase. The index identifies each authority; original source links are recorded where available.')
+    _table(d, ['Item', 'Judgment', 'Citation', 'Court', 'Date'],
+           [(i, x['case']['title'], x['case'].get('citation'), x['case'].get('court'), x['case'].get('decision_date')) for i, x in enumerate(cases, 1)])
+    _footer(d, attribution)
+    for i, item in enumerate(cases, 1):
+        c = item['case']
+        d.add_page_break()
+        d.add_heading(f"{i}. {c['title']}", level=1)
+        d.add_paragraph(' | '.join(str(c.get(k) or '') for k in ('citation', 'court', 'decision_date', 'case_number')))
+        d.add_paragraph('Original source: ' + (c.get('source_url') or 'Not linked in this corpus'))
+        for h in item['curated']:
+            d.add_heading('Research headnote', level=2)
+            d.add_paragraph(h.get('summary') or '')
+        d.add_heading('Judgment text', level=2)
+        for ch in item['chunks']:
+            for para in re.split(r'\n\s*\n', ch['text']):
+                text = re.sub(r'\[(SECTION|TITLE)\]\s*#*\s*', '', para).strip()
+                if text:
+                    d.add_paragraph(text)
+    return _save(d), 'docx'

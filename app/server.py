@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 APP = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(APP)
 sys.path.insert(0, APP)
-import auth, export  # noqa: E402
+import auth, export, research  # noqa: E402
 
 PUBLIC_DB = os.path.join(ROOT, "data", "lawbase.sqlite")
 INTERNAL_DBS = sorted(glob.glob(os.path.join(ROOT, "internal", "*.sqlite")))
@@ -29,12 +29,15 @@ HOSTED = bool(os.environ.get("PORT"))  # the one switch: local desktop use never
 COOKIE_NAME = "lawbase_session"
 _METADATA_INDEX = None
 _METADATA_TOKEN_INDEX = None
+_METADATA_STAMP = None
 _GENERIC_METADATA_WORDS = frozenset({
     "anr", "another", "appln", "application", "bail", "court", "directorate",
     "enforcement", "high", "india", "ors", "state", "union", "versus", "vs",
 })
 
 
+_WORK_SLOTS = threading.BoundedSemaphore(3)
+_EXPORT_SLOT = threading.BoundedSemaphore(1)
 _POOL = queue.LifoQueue()   # reused read-only connections: SQLite's page cache survives between requests
 _HAS_CHUNK_CASE = None      # True when the compact rowid -> case_id map (pipeline/optimize_db.py) exists
 
@@ -112,8 +115,9 @@ def _metadata_query(query):
 
 def _metadata_index(c):
     """Cache normalized public-case metadata once per process."""
-    global _METADATA_INDEX, _METADATA_TOKEN_INDEX
-    if _METADATA_INDEX is None:
+    global _METADATA_INDEX, _METADATA_TOKEN_INDEX, _METADATA_STAMP
+    stamp = _db_stamp()
+    if _METADATA_INDEX is None or stamp != _METADATA_STAMP:
         rows = c.execute("""SELECT c.case_id, c.title, c.citation, c.case_number,
                             coalesce(e.citation_extra, '') AS citation_extra
                             FROM cases c LEFT JOIN enrich_cases e USING (case_id)""")
@@ -129,6 +133,7 @@ def _metadata_index(c):
             for word in combined_words:
                 token_index.setdefault(word, set()).add(row["case_id"])
         _METADATA_TOKEN_INDEX = {word: frozenset(ids) for word, ids in token_index.items()}
+        _METADATA_STAMP = stamp
         _METADATA_INDEX = index  # assign the sentinel last so concurrent first requests see both caches
     return _METADATA_INDEX
 
@@ -210,6 +215,15 @@ def api_meta(c, p):
     meta = {r[0]: r[1] for r in c.execute("SELECT key, value FROM meta")}
     courts = [dict(r) for r in c.execute("SELECT court_slug, any_value(court) AS court, count(*) AS n FROM cases GROUP BY court_slug ORDER BY n DESC")] \
         if False else [dict(r) for r in c.execute("SELECT court_slug, max(court) AS court, count(*) AS n FROM cases GROUP BY court_slug ORDER BY n DESC")]
+    canonical = {"bombay": "High Court of Bombay", "allahabad": "High Court of Judicature at Allahabad", "delhi": "High Court of Delhi", "supreme": "Supreme Court of India", "atfp-safema": "Appellate Tribunal under SAFEMA", "nclat": "National Company Law Appellate Tribunal"}
+    for court in courts:
+        court["court"] = canonical.get(court["court_slug"], court["court"])
+    meta["cases"] = c.execute("SELECT count(*) FROM cases").fetchone()[0]
+    meta["provisions"] = c.execute("SELECT count(*) FROM statutes").fetchone()[0]
+    meta["briefs"] = c.execute("SELECT count(*) FROM briefs").fetchone()[0]
+    meta["headnotes"] = c.execute("SELECT count(*) FROM enrich_cases").fetchone()[0]
+    meta["latest_decision"] = c.execute("SELECT max(decision_date) FROM cases").fetchone()[0]
+    meta["last_review"] = c.execute("SELECT max(updated) FROM enrich_cases").fetchone()[0]
     issues = [dict(r) for r in c.execute("""SELECT i.issue, i.label, i.act, count(ci.case_id) AS n FROM issues i
         LEFT JOIN case_issues ci USING (issue) GROUP BY i.issue ORDER BY i.issue""")]
     acts = [dict(r) for r in c.execute("SELECT act_id, act_short, count(*) AS n FROM statutes GROUP BY act_id ORDER BY act_short")]
@@ -218,7 +232,13 @@ def api_meta(c, p):
 
 def api_search(c, p):
     q = (p.get("q") or "").strip()
-    limit = min(int(p.get("limit") or 50), 300)
+    limit = max(1, min(int(p.get("limit") or 25), 50))
+    offset = max(0, int(p.get("offset") or 0))
+    if len(q) > 300 or len(q.split()) > 20:
+        raise ValueError("Use a search of at most 300 characters and 20 words")
+    sort = p.get("sort", "relevance")
+    if sort not in ("relevance", "newest", "oldest"):
+        raise ValueError("Unknown sort order")
     filt, args = [], []
     if p.get("court"):
         filt.append("c.court_slug = ?"); args.append(p["court"])
@@ -259,12 +279,12 @@ def api_search(c, p):
         # Phase 1 ranks passages from the FTS index and the compact map only - no passage text is read.
         sql = f"""SELECT chunks_fts.rowid AS rid, k.case_id, bm25(chunks_fts) AS score
                   FROM chunks_fts JOIN {cmap} k ON k.rowid = chunks_fts.rowid JOIN cases c ON c.case_id = k.case_id
-                  WHERE chunks_fts MATCH ?{extra}{restrict} ORDER BY score LIMIT 3000"""
+                  WHERE chunks_fts MATCH ?{extra}{restrict} ORDER BY score, chunks_fts.rowid"""
         try:
-            rows = c.execute(sql, [match] + args).fetchall()
+            rows = c.execute(sql, [match] + args)
         except sqlite3.OperationalError:
             match = '"' + q.replace('"', "") + '"'
-            rows = c.execute(sql, [match] + args).fetchall()
+            rows = c.execute(sql, [match] + args)
         snip_rids = {}
         for r in rows:
             b = best.get(r["case_id"])
@@ -308,10 +328,15 @@ def api_search(c, p):
             zero = (0,) * 8
             order.sort(key=lambda cid: priorities.get(cid, zero), reverse=True)
     elif filt:
-        for r in c.execute(f"SELECT c.case_id FROM cases c WHERE 1=1{extra} ORDER BY c.decision_date DESC LIMIT 2000", args):
+        for r in c.execute(f"SELECT c.case_id FROM cases c WHERE 1=1{extra} ORDER BY c.decision_date DESC, c.case_id", args):
             best[r[0]] = {"hits": 0, "snips": []}
             order.append(r[0])
-    page = order[:limit]
+    # Rank complete case matches, but load passage text only for this page.
+    if sort in ("newest", "oldest"):
+        dates = dict(c.execute("SELECT case_id, coalesce(decision_date, '') FROM cases"))
+        dated = sorted((cid for cid in order if dates.get(cid)), key=lambda cid: (dates[cid], cid), reverse=sort == "newest")
+        order = dated + sorted(cid for cid in order if not dates.get(cid))
+    page = order[offset:offset + limit]
     if q and best_rids:
         # Phase 2: snippets for at most two passages of each returned case (<= 2 x limit rows of text).
         want = [rid for cid in page for rid in best_rids.get(cid, ())]
@@ -327,7 +352,7 @@ def api_search(c, p):
     for cid in page:
         m = dict(c.execute("SELECT * FROM cases WHERE case_id=?", (cid,)).fetchone())
         out.append({**m, **best[cid], "issues": issue_labels(c, cid)[:6], "curated": curated(c, cid)})
-    return {"results": out, "total": len(order)}
+    return {"results": out, "total": len(order), "offset": offset, "limit": limit, "has_more": offset + limit < len(order)}
 
 
 def api_case(c, p):
@@ -336,7 +361,7 @@ def api_case(c, p):
     if not m:
         return {"error": "not found"}
     chunks = [dict(r) for r in c.execute("SELECT chunk_index, section_type, text FROM chunks WHERE case_id=? ORDER BY chunk_index", (cid,))]
-    return {"case": dict(m), "issues": issue_labels(c, cid), "curated": curated(c, cid), "chunks": chunks}
+    return {"case": dict(m), "source_kind": "original PDF" if (m["source_url"] or "").lower().split("?")[0].endswith(".pdf") else "source collection" if m["source_url"] else "unavailable", "issues": issue_labels(c, cid), "curated": curated(c, cid), "chunks": chunks}
 
 
 def api_statutes(c, p):
@@ -372,6 +397,10 @@ def api_briefs(c, p):
     templates = []
     if INTERNAL_DBS:
         templates = [dict(r) for r in c.execute("SELECT slug, title, tier, issues FROM internal.templates ORDER BY title")]
+    q = (p.get("q") or "").strip().casefold()
+    if q:
+        out = [b for b in out if all(t in (b["title"] + " " + api_brief(c, {"slug": b["slug"]})["body"]).casefold() for t in q.split())]
+        templates = [b for b in templates if q in b["title"].casefold()]
     return {"briefs": out, "templates": templates}
 
 
@@ -389,6 +418,19 @@ def api_brief(c, p):
 def do_export(c, body):
     kind = body.get("kind")
     attr = attribution(c)
+    if len(body.get("ids", [])) > 20:
+        raise ValueError("Export up to 20 judgments at a time")
+    if kind == "bundle":
+        ids = list(dict.fromkeys(body.get("ids", [])))
+        if not ids:
+            raise ValueError("Choose judgments for the bundle")
+        size = sum(c.execute("SELECT coalesce(sum(length(text)),0) FROM chunks WHERE case_id=?", (cid,)).fetchone()[0] for cid in ids)
+        if size > 8_000_000:
+            raise ValueError("This bundle is too large; select fewer judgments")
+        cases = [api_case(c, {"id": cid}) for cid in ids]
+        if any("error" in item for item in cases):
+            raise ValueError("A selected judgment no longer exists")
+        return export.bundle(cases, attr), "LawBase-authority-bundle"
     if kind == "table":
         rows = []
         for cid in body.get("ids", []):
@@ -411,11 +453,21 @@ def do_export(c, body):
 
 
 # admin-only management API (HOSTED only; see api_users_* below)
+def api_compare(c, p):
+    ids = list(dict.fromkeys((p.get("ids") or "").split(",")))[:3]
+    out = []
+    for cid in ids:
+        row = c.execute("SELECT * FROM cases WHERE case_id=?", (cid,)).fetchone()
+        if row:
+            out.append({"case": dict(row), "issues": issue_labels(c, cid), "curated": curated(c, cid)})
+    return {"cases": out}
+
+
 def api_users_list(c, p, session):
     return {"users": auth.list_users(ROOT)}
 
 
-ROUTES = {"/api/meta": api_meta, "/api/search": api_search, "/api/case": api_case, "/api/statutes": api_statutes,
+ROUTES = {"/api/compare": api_compare, "/api/meta": api_meta, "/api/search": api_search, "/api/case": api_case, "/api/statutes": api_statutes,
           "/api/provision": api_provision, "/api/briefs": api_briefs, "/api/brief": api_brief}
 ADMIN_ROUTES = {"/api/users": api_users_list}
 PUBLIC_PATHS = {"/login.html", "/api/login",  # reachable with no session, only when HOSTED
@@ -455,6 +507,9 @@ def cache_put(key, raw, packed):
     if size > _CACHE_BUDGET // 8:
         return
     with _CACHE_LOCK:
+        previous = _CACHE.pop(key, None)
+        if previous:
+            _CACHE_STATE["bytes"] -= len(previous[0]) + len(previous[1])
         _CACHE[key] = (raw, packed)
         _CACHE_STATE["bytes"] += size
         while _CACHE_STATE["bytes"] > _CACHE_BUDGET and _CACHE:
@@ -478,6 +533,10 @@ class Handler(BaseHTTPRequestHandler):
     def _send(self, code, data, ctype, extra=None, packed=None):
         """Send a response; text and JSON over 1 KB go gzip-compressed when the client accepts it."""
         extra = dict(extra or {})
+        extra.setdefault("X-Content-Type-Options", "nosniff")
+        extra.setdefault("Referrer-Policy", "same-origin")
+        if self.path.startswith("/api/"):
+            extra.setdefault("Cache-Control", "no-store")
         if self._accepts_gzip() and ctype.startswith(GZIP_TYPES) and len(data) > 1024:
             data = packed if packed is not None else gzip.compress(data, compresslevel=5)
             extra["Content-Encoding"] = "gzip"
@@ -502,7 +561,7 @@ class Handler(BaseHTTPRequestHandler):
     def _require_session(self, path):
         """Returns a session dict, or None after already sending a 401/redirect."""
         if not HOSTED or path in PUBLIC_PATHS:
-            return {"username": None, "is_admin": False}
+            return {"username": "local", "is_admin": not HOSTED}
         session = self._session()
         if session:
             return session
@@ -519,6 +578,26 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/whoami":
             return self._send(200, json.dumps({"hosted": HOSTED, **session}).encode(), "application/json")
+        if u.path in ("/api/library", "/api/submissions", "/api/submission-file"):
+            p = {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
+            try:
+                if u.path == "/api/submission-file":
+                    f = research.attachment(ROOT, session, p.get("id", ""))
+                    return self._send(200, f.read_bytes(), "application/pdf", {"Content-Disposition": 'attachment; filename="judgment-for-review.pdf"'})
+                res = research.listing(ROOT, session, u.path.split("/")[-1])
+                if u.path == "/api/library":
+                    c = connect()
+                    try:
+                        for item in res["items"]:
+                            row = c.execute("SELECT title,citation,court,decision_date FROM cases WHERE case_id=?", (item["case_id"],)).fetchone()
+                            item["case"] = dict(row) if row else {"title": item["case_id"]}
+                    finally:
+                        release(c)
+                return self._send(200, json.dumps(res, ensure_ascii=False).encode(), "application/json")
+            except PermissionError as e:
+                return self._send(403, json.dumps({"error": str(e)}).encode(), "application/json")
+            except (ValueError, OSError) as e:
+                return self._send(400, json.dumps({"error": str(e)}).encode(), "application/json")
         if u.path in ADMIN_ROUTES:
             if not session["is_admin"]:
                 return self._send(403, json.dumps({"error": "admin only"}).encode(), "application/json")
@@ -535,11 +614,12 @@ class Handler(BaseHTTPRequestHandler):
             if hit is not None:
                 return self._send(200, hit[0], "application/json", {"X-Cache": "hit"}, packed=hit[1])
             try:
-                c = connect()
-                try:
-                    res = ROUTES[u.path](c, p)
-                finally:
-                    release(c)
+                with _WORK_SLOTS:
+                    c = connect()
+                    try:
+                        res = ROUTES[u.path](c, p)
+                    finally:
+                        release(c)
                 raw = json.dumps(res, ensure_ascii=False, default=str).encode("utf-8")
                 packed = gzip.compress(raw, compresslevel=5)
                 if "error" not in res:
@@ -570,8 +650,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
+        origin = self.headers.get("Origin")
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            maximum = research.MAX_BODY if u.path == "/api/submissions/create" else 256 * 1024
+            if length < 0 or length > maximum:
+                return self._send(413, b'{"error":"Request too large"}', "application/json")
+            if length and self.headers.get("Content-Type", "").split(";")[0] != "application/json":
+                return self._send(415, b'{"error":"JSON required"}', "application/json")
+            body = json.loads(self.rfile.read(length) or b"{}")
+            if not isinstance(body, dict):
+                raise ValueError("JSON object required")
+        except (ValueError, UnicodeDecodeError):
+            return self._send(400, b'{"error":"Invalid request"}', "application/json")
+        if origin and urllib.parse.urlparse(origin).netloc != self.headers.get("Host"):
+            return self._send(403, b'{"error":"Request origin rejected"}', "application/json")
         if u.path == "/api/login":
-            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
             user = auth.verify_login(ROOT, body.get("username", ""), body.get("password", ""))
             if not user:
                 return self._send(401, json.dumps({"error": "wrong username or password"}).encode(), "application/json")
@@ -585,10 +679,29 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/logout":
             return self._send(200, b"{}", "application/json", {"Set-Cookie": f"{COOKIE_NAME}=; Path=/; Max-Age=0"})
+        if u.path in ("/api/library/save", "/api/searches/save", "/api/submissions/create", "/api/submissions/review"):
+            c = connect()
+            try:
+                if u.path == "/api/library/save":
+                    if not c.execute("SELECT 1 FROM cases WHERE case_id=?", (body.get("case_id"),)).fetchone():
+                        raise ValueError("Judgment not found")
+                    res = research.save_library(ROOT, session, body)
+                elif u.path == "/api/searches/save":
+                    res = research.save_search(ROOT, session, body)
+                elif u.path == "/api/submissions/create":
+                    res = research.submit(ROOT, session, body)
+                else:
+                    res = research.review(ROOT, session, body, c)
+                return self._send(200, json.dumps(res).encode(), "application/json")
+            except PermissionError as e:
+                return self._send(403, json.dumps({"error": str(e)}).encode(), "application/json")
+            except (ValueError, KeyError, TypeError) as e:
+                return self._send(400, json.dumps({"error": str(e)}).encode(), "application/json")
+            finally:
+                release(c)
         if u.path in ("/api/users/create", "/api/users/delete", "/api/users/password"):
             if not session["is_admin"]:
                 return self._send(403, json.dumps({"error": "admin only"}).encode(), "application/json")
-            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
             try:
                 if u.path == "/api/users/create":
                     auth.create_user(ROOT, body["username"], body["password"], body.get("is_admin", False))
@@ -603,13 +716,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, json.dumps({"error": str(e)}).encode(), "application/json")
         if u.path != "/api/export":
             return self._send(404, b"not found", "text/plain")
-        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         try:
-            c = connect()
-            try:
-                (data, ext), name = do_export(c, body)
-            finally:
-                release(c)
+            with _EXPORT_SLOT:
+                c = connect()
+                try:
+                    (data, ext), name = do_export(c, body)
+                finally:
+                    release(c)
             ctype = "application/vnd.openxmlformats-officedocument.wordprocessingml.document" if ext == "docx" else "text/markdown"
             self._send(200, data, ctype, {"Content-Disposition": f'attachment; filename="{name}.{ext}"'})
         except Exception as e:
